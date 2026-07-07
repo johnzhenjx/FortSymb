@@ -10,6 +10,7 @@ import Language.Fortran.Version
 import Language.Fortran.AST
 
 import What4.Interface
+import What4.BaseTypes
 import What4.Expr.Builder
 
 type VarName = String
@@ -19,11 +20,28 @@ data SomeExpr sym where
     SomeInt  :: SymExpr sym BaseIntegerType -> SomeExpr sym
     SomeBool :: Pred sym -> SomeExpr sym
 
+data VarType
+    = VarReal
+    | VarInt
+    | VarBool
+
+data VarBinding sym = VBinding
+    { 
+    varType :: VarType,
+    varValue :: Maybe (SomeExpr sym)
+    }
+
+
 data SymState sym = SState
     { 
-    env :: Map VarName (SomeExpr sym),
+    env :: Map VarName (VarBinding sym),
     pathCond :: [Pred sym]
     }
+
+-- x ↦ VarBinding VarReal Nothing
+-- y ↦ VarBinding VarReal (Just (SomeReal yExpr))
+-- i ↦ VarBinding VarInt  Nothing
+-- b ↦ VarBinding VarBool (Just (SomeBool bExpr))
 
 emptyState :: SymState sym
 emptyState = SState
@@ -41,7 +59,7 @@ execProgramUnit ::
 
 execProgramUnit sym pu =
     case pu of 
-        PUMain _ _ _ blocks -> execBlocks sym blocks emptyState
+        PUMain _ann _span _name blocks -> execBlocks sym blocks emptyState
         _ -> error "Bad"
 
 
@@ -55,7 +73,7 @@ execBlocks ::
 execBlocks sym blocks state =
     case blocks of
         [] -> pure [state]
-        [b:bs] -> do
+        b:bs -> do
             statesAfterBlock <- execBlock sym b state 
                 -- ^generate new IO state list after execBlock sym b state
             fmap concat ( mapM (execBlocks sym bs) statesAfterBlock )
@@ -72,56 +90,67 @@ execBlock ::
 
 execBlock sym block state = 
     case block of 
-        BlStatement _ _ _ statement -> execStatement sym statement state
-        
+        BlStatement _ann _span _label statement -> pure [execStatement sym statement state]
+        -- ...
 
 
--- type Var = String
+execStatement :: IsExprBuilder sym
+    => sym
+    -> Statement ()
+    -> SymState sym
+    -> IO (SymState sym)
 
--- data SymbType
---     = TInt
---     | TReal
---     | TBool
---     deriving (Eq, Show)
+execStatement sym statement state = 
+    case statement of
+        StDeclaration _ann _span typeSpec _attr decls -> declareVars sym typeSpec state (alistList declarators)
 
--- data SymbVar = VVar SymbType Var 
---     deriving (Eq, Show)
 
--- data SymbExpr -- assume entire program is correctly typed; there are other tools to check this
---     = SConst SymbConst
---     | SVar SymbVar
---     | SAdd SymbExpr SymbExpr
---     | SSub SymbExpr SymbExpr
---     | SMul SymbExpr SymbExpr
---     | SDiv SymbExpr SymbExpr
---     deriving (Eq, Show)
+declareVars :: IsExprBuilder sym
+    => sym
+    -> TypeSpec ()
+    -> SymState sym
+    -> [Declarator ()]
+    -> IO (SymState sym)
 
--- data SymbConst
---     = CInt Integer
---     | CReal Double --iffy?
---     | CBool Bool
---     deriving (Eq, Show)
+declareVars sym typeSpec state decls =
+    case decls of
+        [] -> pure state
+        d:ds -> do
+            newState <- declareVar sym typeSpec state d
+            declareVars sym typeSpec newState ds
 
--- data SymbBool --iffy?
---     = SBool Bool
---     | SNot SymbBool
---     | SEq SymbExpr SymbExpr
---     | SNeq SymbExpr SymbExpr
---     | SLt SymbExpr SymbExpr
---     | SLeq SymbExpr SymbExpr
---     | SGt SymbExpr SymbExpr
---     | SGeq SymbExpr SymbExpr
---     | SAnd SymbBool SymbBool
---     | SOr SymbBool SymbBool
---     deriving (Eq, Show)
+declareVar :: IsExprBuilder sym
+    => sym
+    -> TypeSpec ()
+    -> SymState sym
+    -> Declarator ()
+    -> IO (SymState sym)
+  
+declareVar sym typeSpec state decl =
+    -- only scalar type for now
+    case declaratorVariable decl of
+        ExpValue _ann _span (ValVariable name) ->
+            case declaratorInitial decl of
+                Nothing -> do
+                    let newState = state { env = Map.insert name (VBinding (getVarType typeSpec) Nothing) (env state) }
+                    pure newState
+                Just initExpr -> do
+                    -- evaluate initExpr to get SomeExpr sym
+                    -- for now, we will just insert Uninit for simplicity
+                    let newState = state { env = Map.insert name (VBinding (getVarType typeSpec) Nothing) (env state) }
+                    -- let newState = state { env = Map.insert name (VBinding (getVarType typeSpec) (Just initExpr)) (env state) }
+                    pure newState
+        _ -> error "Bad"   
 
--- data SymbState = SState 
---     { 
---     env :: Map SymbVar SymbExpr,
---     pathCond :: [SymbBool]
---     -- fresh :: Int --counts number of fresh variables introduced by executor
---     }
---     deriving (Eq, Show)
+getVarType :: TypeSpec () -> VarType
+getVarType typeSpec =
+    case typeSpecBaseType typeSpec of
+        TypeReal -> VarReal
+        TypeInteger -> VarInt
+        TypeLogical -> VarBool
+        _ -> error "Unsupported declaration type"
+
+
 
 main :: IO ()
 main = do
