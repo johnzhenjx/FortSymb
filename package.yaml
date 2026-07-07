@@ -25,6 +25,7 @@ dependencies:
 - containers
 - bytestring
 - what4
+- parameterized-utils
 
 ghc-options:
 - -Wall

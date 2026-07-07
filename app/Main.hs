@@ -12,6 +12,12 @@ import Language.Fortran.AST
 import What4.Interface
 import What4.BaseTypes
 import What4.Expr.Builder
+import What4.Expr
+         ( ExprBuilder,  FloatModeRepr(..), newExprBuilder
+         , BoolExpr, GroundValue, groundEval
+		 , EmptyExprBuilderState(..) )
+import Data.Parameterized.Nonce (newIONonceGenerator)
+import Data.Parameterized.Some
 
 type VarName = String
 
@@ -24,6 +30,7 @@ data VarType
     = VarReal
     | VarInt
     | VarBool
+    deriving Show
 
 data VarBinding sym = VBinding
     { 
@@ -50,11 +57,11 @@ emptyState = SState
     pathCond = []
     }
 
-execProgram :: IsExprBuilder sym
+execProgramFile :: IsExprBuilder sym
     => sym
     -> ProgramFile a
     -> IO [SymState sym]
-execProgram sym pf = 
+execProgramFile sym pf = 
     case programFileProgramUnits pf of
         [pu] -> execProgramUnit sym pu
         _  -> error "Only single program unit is supported for now"
@@ -69,7 +76,7 @@ execProgramUnit ::
 
 execProgramUnit sym pu =
     case pu of 
-        PUMain _ann _span _name blocks -> execBlocks sym blocks emptyState
+        PUMain _ann _span _name blocks _subp -> execBlocks sym blocks emptyState
         _ -> error "Bad"
 
 
@@ -163,11 +170,25 @@ getVarType typeSpec =
         _ -> error "Unsupported declaration type"
 
 
+showBinding :: VarBinding sym -> String
+showBinding binding =
+    case varValue binding of
+        Nothing -> show (varType binding) ++ ", uninitialised"
+        Just _ -> show (varType binding) ++ ", initialised"
+
+printState :: SymState sym -> IO ()
+printState state = do
+    putStrLn "Environment:"
+    mapM_ printOne (Map.toList (env state))
+  where
+    printOne (name, binding) =
+        putStrLn ("  " ++ name ++ " : " ++ showBinding binding)
+
 
 main :: IO ()
 main = do
-    let filename = "test0.f90"
-    contents <- B.readFile "test0.f90"
+    let filename = "test3.f90"
+    contents <- B.readFile "test3.f90"
     case byVer Fortran90 filename contents of
         Left err -> do
             putStrLn "Parse error:"
@@ -175,4 +196,8 @@ main = do
 
         Right ast -> do
             putStrLn "Parsed successfully!"
-            -- print ast
+            print ast
+            Some nonceGen <- newIONonceGenerator
+            sym <- newExprBuilder FloatRealRepr EmptyExprBuilderState nonceGen
+            states <- execProgramFile sym ast
+            mapM_ printState states
