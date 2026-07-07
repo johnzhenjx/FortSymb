@@ -50,6 +50,16 @@ emptyState = SState
     pathCond = []
     }
 
+execProgram :: IsExprBuilder sym
+    => sym
+    -> ProgramFile a
+    -> IO [SymState sym]
+execProgram sym pf = 
+    case programFileProgramUnits pf of
+        [pu] -> execProgramUnit sym pu
+        _  -> error "Only single program unit is supported for now"
+        -- fmap concat ( mapM (execProgramUnit sym) (programFileProgramUnits pf) )
+
 
 execProgramUnit :: 
     IsExprBuilder sym
