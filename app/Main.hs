@@ -98,7 +98,7 @@ execBlock sym block state =
 
 execStatement :: IsExprBuilder sym
     => sym
-    -> Statement ()
+    -> Statement a
     -> SymState sym
     -> IO (SymState sym)
 
@@ -109,9 +109,9 @@ execStatement sym statement state =
 
 declareVars :: IsExprBuilder sym
     => sym
-    -> TypeSpec ()
+    -> TypeSpec a
     -> SymState sym
-    -> [Declarator ()]
+    -> [Declarator a]
     -> IO (SymState sym)
 
 declareVars sym typeSpec state decls =
@@ -123,9 +123,9 @@ declareVars sym typeSpec state decls =
 
 declareVar :: IsExprBuilder sym
     => sym
-    -> TypeSpec ()
+    -> TypeSpec a
     -> SymState sym
-    -> Declarator ()
+    -> Declarator a
     -> IO (SymState sym)
   
 declareVar sym typeSpec state decl =
@@ -144,7 +144,7 @@ declareVar sym typeSpec state decl =
                     pure newState
         _ -> error "Bad"   
 
-getVarType :: TypeSpec () -> VarType
+getVarType :: TypeSpec a -> VarType
 getVarType typeSpec =
     case typeSpecBaseType typeSpec of
         TypeReal -> VarReal
