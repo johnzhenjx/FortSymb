@@ -90,7 +90,9 @@ execBlock ::
 
 execBlock sym block state = 
     case block of 
-        BlStatement _ann _span _label statement -> pure [execStatement sym statement state]
+        BlStatement _ann _span _label statement -> do
+            singularSt <- execStatement sym statement state
+            pure [singularSt]
         -- ...
 
 
@@ -102,7 +104,7 @@ execStatement :: IsExprBuilder sym
 
 execStatement sym statement state = 
     case statement of
-        StDeclaration _ann _span typeSpec _attr decls -> declareVars sym typeSpec state (alistList declarators)
+        StDeclaration _ann _span typeSpec _attr declsInfo -> declareVars sym typeSpec state (alistList declsInfo)
 
 
 declareVars :: IsExprBuilder sym
