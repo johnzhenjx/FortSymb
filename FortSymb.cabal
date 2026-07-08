@@ -41,6 +41,7 @@ library
     containers,
     fortran-src,
     parameterized-utils,
+    prettyprinter,
     what4
   default-language: Haskell2010
 
@@ -62,6 +63,7 @@ executable FortSymb-exe
     containers,
     fortran-src,
     parameterized-utils,
+    prettyprinter,
     what4
   default-language: Haskell2010
 
@@ -84,5 +86,6 @@ test-suite FortSymb-test
     containers,
     fortran-src,
     parameterized-utils,
+    prettyprinter,
     what4
   default-language: Haskell2010

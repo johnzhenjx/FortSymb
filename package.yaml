@@ -26,6 +26,7 @@ dependencies:
 - bytestring
 - what4
 - parameterized-utils
+- prettyprinter
 
 ghc-options:
 - -Wall
