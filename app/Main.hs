@@ -131,6 +131,7 @@ execStatement :: IsExprBuilder sym
 execStatement sym statement state = 
     case statement of
         StDeclaration _ann _span typeSpec _attr declsInfo -> declareVars sym typeSpec state (alistList declsInfo)
+        StExpressionAssign _ann _span lhs rhs -> execAssign sym lhs rhs state
 
 
 declareVars :: IsExprBuilder sym
@@ -459,21 +460,38 @@ coerceOnAssignment sym targetType rhs =
         _ -> error "Bad assignment"
 
 
+execAssign :: IsExprBuilder sym
+  => sym
+  -> Expression a
+  -> Expression a
+  -> SymState sym
+  -> IO (SymState sym)
+
+execAssign sym lhs rhs state =
+    case lhs of
+        ExpValue _ann _span (ValVariable name) -> do
+            rhsBeforeCoerce <- evalExpr sym rhs state
+            case Map.lookup name (env state) of
+                Nothing -> error ("Assignment to undeclared variable: " ++ name)
+                Just binding -> do
+                    rhsAfterCoerce <- coerceOnAssignment sym (varType binding) rhsBeforeCoerce
+                    let newState = state { env = Map.insert name (VBinding (varType binding) (Just rhsAfterCoerce)) (env state) }
+                    pure newState
+        _ -> error "Left-hand side of assignment must be a variable"
+
+
 
 showBinding :: IsExpr (SymExpr sym) => VarBinding sym -> String
 showBinding binding =
     case varValue binding of
         Nothing -> show (varType binding) ++ ", uninitialised"
-
         Just e -> show (varType binding) ++ ", initialised = " ++ showSomeExpr e
 
 showSomeExpr :: IsExpr (SymExpr sym) => SomeExpr sym -> String
 showSomeExpr expr =
     case expr of
         SomeInt e -> "int " ++ show (printSymExpr e)
-
         SomeReal e -> "real " ++ show (printSymExpr e)
-
         SomeBool p -> "bool " ++ show (printSymExpr p)
 
 
