@@ -41,6 +41,8 @@ import Printer
 
 import qualified Data.List.NonEmpty as NonEmpty
 
+import Control.Monad (filterM)
+
 
 execProgramFile :: IsSymExprBuilder sym
     => sym
@@ -300,6 +302,7 @@ execIfClauses sym condAndBlocks maybeElseBlocks state =
                 _ -> error "logical if condition must evaluate to logical"
 
 
+
 --converts list of What4 predicates into conjunction of predicates
 pathPredicateOfCondList :: IsExprBuilder sym
     => sym
@@ -315,19 +318,37 @@ pathPredicateOfCondList sym pathCond = recurseConj pathCond
 checkStateFeasibility ::
     ExprBuilder t st fs ->
     SymState (ExprBuilder t st fs) ->
-    IO ()
+    IO (Maybe (GroundEvalFn t))
 checkStateFeasibility sym state = do
     pathPred <- pathPredicateOfCondList sym (pathCond state)
     solverResult <- invokeSolver sym pathPred
     case solverResult of
-        Sat (ge, _) -> putStrLn "Satisfiable." --for now
-        Unsat _ -> putStrLn "Unsatisfiable."
-        Unknown -> putStrLn "Solver failed to find a solution."
+        Sat (ge, _) -> pure (Just ge) --for now
+        Unsat _ -> pure (Nothing)
+        Unknown -> error "Solver failed to find a solution."
+
+--has a logger attached for now
+keepFeasibleStates ::
+    ExprBuilder t st fs ->
+    [SymState (ExprBuilder t st fs)] ->
+    IO [SymState (ExprBuilder t st fs)]
+keepFeasibleStates sym states = do
+    numberedResults <- filterM isFeasible (zip [(1 :: Int)..] states)
+    pure (map snd numberedResults)
+    where
+        isFeasible (i, state) = do
+            result <- checkStateFeasibility sym state
+            case result of
+                Just _ -> do
+                    putStrLn $ show i ++ ". Satisfiable"
+                    pure True
+                Nothing -> do
+                    putStrLn $ show i ++ ". Unsatisfiable"
+                    pure False
 
 
 z3exe :: FilePath
 z3exe = "z3-4.8.12-x86-win/bin/z3.exe"
-
 
 invokeSolver ::
     ExprBuilder t st fs ->
@@ -358,8 +379,8 @@ main = do
             Some nonceGen <- newIONonceGenerator
             sym <- newExprBuilder FloatRealRepr EmptyExprBuilderState nonceGen
             extendConfig z3Options (getConfiguration sym)
-            
-            states <- execProgramFile sym ast
-            printStates states
 
-            mapM_ (checkStateFeasibility sym) states
+            allStates <- execProgramFile sym ast
+            printStates allStates
+            feasibleStates <- keepFeasibleStates sym allStates
+            printStates feasibleStates
