@@ -136,74 +136,6 @@ execStatement sym statement state =
         StRead2 _ann _span _format maybeReadList -> execRead2s sym maybeReadList state --don't include StRead for now
 
 
-execRead2s :: IsSymExprBuilder sym
-    => sym
-    -> Maybe (AList Expression a)
-    -> SymState sym
-    -> IO (SymState sym)
-
-execRead2s sym maybeReadList state =
-    case maybeReadList of
-        Nothing -> pure state
-        Just readList -> execRead2Vars sym (readTargetNames (alistList readList)) state --strip readList into a Stringlist of variable names
-    where
-        readTargetNames :: [Expression a] -> [VarName]
-        readTargetNames = map readTargetName
-
-        readTargetName :: Expression a -> VarName
-        readTargetName expr =
-            case expr of
-                ExpValue _ann _span (ValVariable name) ->  name
-                _ -> error "Non-variable read target"
-
-execRead2Vars :: IsSymExprBuilder sym
-    => sym
-    -> [VarName]
-    -> SymState sym
-    -> IO (SymState sym)
-
-execRead2Vars sym names state =
-    case names of
-        [] -> pure state
-        name:rest -> do
-            newState <- execRead2Var sym name state
-            execRead2Vars sym rest newState
-
-execRead2Var :: IsSymExprBuilder sym
-    => sym
-    -> VarName
-    -> SymState sym
-    -> IO (SymState sym)
-
-execRead2Var sym name state =
-    case Map.lookup name (env state) of
-        Nothing -> error ("Read into undeclared variable: " ++ name)
-        Just binding -> do
-            let n = freshCount state
-                inputName = name ++ "_input_" ++ show n
-
-            freshVal <- freshInputForType sym inputName (varType binding)
-            let newState = state { env = Map.insert name (VBinding (varType binding) (Just freshVal)) (env state), freshCount = n+1 }
-            pure newState
-
-freshInputForType :: IsSymExprBuilder sym
-    => sym
-    -> String
-    -> VarType
-    -> IO (SomeExpr sym)
-
-freshInputForType sym inputName varTy =
-    case varTy of
-        VarInt -> do
-            x <- freshConstant sym (safeSymbol inputName) BaseIntegerRepr
-            pure (SomeInt x)
-        VarReal -> do
-            x <- freshConstant sym (safeSymbol inputName) BaseRealRepr
-            pure (SomeReal x)
-        VarBool -> do
-            x <- freshConstant sym (safeSymbol inputName) BaseBoolRepr
-            pure (SomeBool x)
-
 
 declareVars :: IsExprBuilder sym
     => sym
@@ -306,7 +238,6 @@ realAstLitToRational rLit =
             case break (== '.') s of
                 (whole, "") ->
                     read whole % 1
-
                 (whole, '.' : frac) ->
                     let (sign, digits) =
                             case whole of
@@ -532,6 +463,7 @@ coerceOnAssignment sym targetType rhs =
         _ -> error "Bad assignment"
 
 
+
 execAssign :: IsExprBuilder sym
   => sym
   -> Expression a
@@ -550,6 +482,76 @@ execAssign sym lhs rhs state =
                     let newState = state { env = Map.insert name (VBinding (varType binding) (Just rhsAfterCoerce)) (env state) }
                     pure newState
         _ -> error "Left-hand side of assignment must be a variable"
+
+
+
+execRead2s :: IsSymExprBuilder sym
+    => sym
+    -> Maybe (AList Expression a)
+    -> SymState sym
+    -> IO (SymState sym)
+
+execRead2s sym maybeReadList state =
+    case maybeReadList of
+        Nothing -> pure state
+        Just readList -> execRead2Vars sym (readTargetNames (alistList readList)) state --strip readList into a Stringlist of variable names
+    where
+        readTargetNames :: [Expression a] -> [VarName]
+        readTargetNames = map readTargetName
+
+        readTargetName :: Expression a -> VarName
+        readTargetName expr =
+            case expr of
+                ExpValue _ann _span (ValVariable name) ->  name
+                _ -> error "Non-variable read target"
+
+execRead2Vars :: IsSymExprBuilder sym
+    => sym
+    -> [VarName]
+    -> SymState sym
+    -> IO (SymState sym)
+
+execRead2Vars sym names state =
+    case names of
+        [] -> pure state
+        name:rest -> do
+            newState <- execRead2Var sym name state
+            execRead2Vars sym rest newState
+
+execRead2Var :: IsSymExprBuilder sym
+    => sym
+    -> VarName
+    -> SymState sym
+    -> IO (SymState sym)
+
+execRead2Var sym name state =
+    case Map.lookup name (env state) of
+        Nothing -> error ("Read into undeclared variable: " ++ name)
+        Just binding -> do
+            let n = freshCount state
+                inputName = name ++ "_input_" ++ show n
+
+            freshVal <- freshInputForType sym inputName (varType binding)
+            let newState = state { env = Map.insert name (VBinding (varType binding) (Just freshVal)) (env state), freshCount = n+1 }
+            pure newState
+
+freshInputForType :: IsSymExprBuilder sym
+    => sym
+    -> String
+    -> VarType
+    -> IO (SomeExpr sym)
+
+freshInputForType sym inputName varTy =
+    case varTy of
+        VarInt -> do
+            x <- freshConstant sym (safeSymbol inputName) BaseIntegerRepr
+            pure (SomeInt x)
+        VarReal -> do
+            x <- freshConstant sym (safeSymbol inputName) BaseRealRepr
+            pure (SomeReal x)
+        VarBool -> do
+            x <- freshConstant sym (safeSymbol inputName) BaseBoolRepr
+            pure (SomeBool x)
 
 
 
