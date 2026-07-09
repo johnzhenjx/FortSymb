@@ -31,6 +31,7 @@ getVarType typeSpec =
         _ -> error "Unsupported declaration type"
 
 
+--evaluates AST expressions to What4 symbolic expressions
 evalExpr :: IsExprBuilder sym
     => sym
     -> Expression a

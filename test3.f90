@@ -1,10 +1,15 @@
 program test3
-    real :: x, y
     integer :: i = 5
     integer :: j
     logical :: b = .false.
-    x = 3
-    read *, y
+    real :: x
     read *, j
     if(i > j) b = .true.
+    if(i > j) then
+        x = 1
+    else if(i==j) then 
+        x = 0
+    else 
+        x = -1
+    end if
 end program test3

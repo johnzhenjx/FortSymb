@@ -32,6 +32,8 @@ import Types
 import EvalExpr
 import Printer
 
+import qualified Data.List.NonEmpty as NonEmpty
+
 
 execProgramFile :: IsSymExprBuilder sym
     => sym
@@ -81,8 +83,11 @@ execBlock :: IsSymExprBuilder sym
 execBlock sym block state = 
     case block of 
         BlStatement _ann _span _label statement -> execStatement sym statement state
-        -- ...
+        --nEcondAndBlocks is a NonEmpty of tuples of cond (Expression) and Block list
+        BlIf _ann _span _label _name nEcondAndBlocks maybeElseBlocks _endIfLabel -> 
+            execIfClauses sym (NonEmpty.toList nEcondAndBlocks) maybeElseBlocks state
 
+        -- ...
 
 execStatement :: IsSymExprBuilder sym
     => sym
@@ -104,27 +109,6 @@ execStatement sym statement state =
         StIfLogical _ann _span cond stmt -> execIfLogical sym cond stmt state --one-line if, ie if(cond) stmt
         _ -> error "Unsupported statement type"
 
-
-execIfLogical :: IsSymExprBuilder sym
-    => sym
-    -> Expression a
-    -> Statement a
-    -> SymState sym
-    -> IO [SymState sym]
-
-execIfLogical sym cond stmt state = do
-    condVal <- evalExpr sym cond state
-    case condVal of
-        SomeBool p -> do
-            notP <- notPred sym p
-
-            let thenState = state { pathCond = p : pathCond state }
-                elseState = state { pathCond = notP : pathCond state }
-
-            thenResults <- execStatement sym stmt thenState
-            pure (thenResults ++ [elseState])
-
-        _ -> error "logical if condition must evaluate to logical"
 
 
 declareVars :: IsExprBuilder sym
@@ -254,6 +238,59 @@ freshInputForType sym inputName varTy =
             x <- freshConstant sym (safeSymbol inputName) BaseBoolRepr
             pure (SomeBool x)
 
+
+
+execIfLogical :: IsSymExprBuilder sym
+    => sym
+    -> Expression a
+    -> Statement a
+    -> SymState sym
+    -> IO [SymState sym]
+
+execIfLogical sym cond stmt state = do
+    condVal <- evalExpr sym cond state
+    case condVal of
+        SomeBool p -> do
+            notP <- notPred sym p
+
+            let thenState = state { pathCond = p : pathCond state }
+                elseState = state { pathCond = notP : pathCond state }
+
+            thenResults <- execStatement sym stmt thenState
+            pure (thenResults ++ [elseState])
+
+        _ -> error "logical if condition must evaluate to logical"
+
+
+
+execIfClauses :: IsSymExprBuilder sym
+    => sym
+    -> [(Expression a, [Block a])] --condAndBlocks
+    -> Maybe [Block a] --maybeElseBlocks
+    -> SymState sym
+    -> IO [SymState sym]
+
+execIfClauses sym condAndBlocks maybeElseBlocks state =
+    case condAndBlocks of
+        [] ->
+            case maybeElseBlocks of
+                Nothing -> pure [state]
+                Just elseBlocks -> execBlocks sym elseBlocks state
+        (cond, blocks) : restClauses -> do
+            condVal <- evalExpr sym cond state
+            case condVal of
+                SomeBool p -> do
+                    notP <- notPred sym p
+
+                    let thenState = state { pathCond = p : pathCond state }
+                        elseState = state { pathCond = notP : pathCond state }
+
+                    thenResults <- execBlocks sym blocks thenState
+                    restResults <- execIfClauses sym restClauses maybeElseBlocks elseState
+                    
+                    pure (thenResults ++ restResults)
+
+                _ -> error "logical if condition must evaluate to logical"
 
 
 main :: IO ()
