@@ -101,18 +101,30 @@ execStatement sym statement state =
         StRead2 _ann _span _format maybeReadList -> do
             newState <- execRead2s sym maybeReadList state --don't include StRead for now
             pure [newState]
-        -- StIfLogical _ann _span cond stmt -> 
+        StIfLogical _ann _span cond stmt -> execIfLogical sym cond stmt state --one-line if, ie if(cond) stmt
+        _ -> error "Unsupported statement type"
 
 
--- execIfLogical :: IsSymExprBuilder sym
---     => sym
---     -> Expression a
---     -> Statement a
---     -> SymState sym
---     -> IO [SymState sym]
+execIfLogical :: IsSymExprBuilder sym
+    => sym
+    -> Expression a
+    -> Statement a
+    -> SymState sym
+    -> IO [SymState sym]
 
--- execIfLogical sym cond stmt = do
---     condVal <- evalExpr sym cond state
+execIfLogical sym cond stmt state = do
+    condVal <- evalExpr sym cond state
+    case condVal of
+        SomeBool p -> do
+            notP <- notPred sym p
+
+            let thenState = state { pathCond = p : pathCond state }
+                elseState = state { pathCond = notP : pathCond state }
+
+            thenResults <- execStatement sym stmt thenState
+            pure (thenResults ++ [elseState])
+
+        _ -> error "logical if condition must evaluate to logical"
 
 
 declareVars :: IsExprBuilder sym
