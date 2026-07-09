@@ -25,7 +25,9 @@ source-repository head
 
 library
   exposed-modules:
-    Lib
+    EvalExpr
+    Printer
+    Types
   other-modules:
     Paths_FortSymb
   autogen-modules:
@@ -34,6 +36,7 @@ library
     src
   default-extensions:
     GADTs
+    FlexibleContexts
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
   build-depends:
     base >=4.7 && <5,
@@ -55,6 +58,7 @@ executable FortSymb-exe
     app
   default-extensions:
     GADTs
+    FlexibleContexts
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
     FortSymb,
@@ -78,6 +82,7 @@ test-suite FortSymb-test
     test
   default-extensions:
     GADTs
+    FlexibleContexts
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
     FortSymb,

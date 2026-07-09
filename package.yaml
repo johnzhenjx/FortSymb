@@ -41,6 +41,7 @@ ghc-options:
 
 default-extensions:
   - GADTs
+  - FlexibleContexts
 
 library:
   source-dirs: src
