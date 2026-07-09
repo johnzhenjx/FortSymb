@@ -17,7 +17,14 @@ import What4.Symbol
 import What4.Expr
          ( ExprBuilder,  FloatModeRepr(..), newExprBuilder
          , BoolExpr, GroundValue, groundEval
-		 , EmptyExprBuilderState(..) )
+		 , EmptyExprBuilderState(..), GroundEvalFn, ExprRangeBindings )
+
+import What4.Config (extendConfig)
+import What4.Solver
+         (defaultLogData, z3Options, withZ3, SatResult(..))
+import What4.Protocol.SMTLib2
+         (assume, sessionWriter, runCheckSat)
+
          
 import Data.Parameterized.Nonce (newIONonceGenerator)
 import Data.Parameterized.Some
@@ -83,10 +90,10 @@ execBlock :: IsSymExprBuilder sym
 execBlock sym block state = 
     case block of 
         BlStatement _ann _span _label statement -> execStatement sym statement state
-        --nEcondAndBlocks is a NonEmpty of tuples of cond (Expression) and Block list
+        --nEcondAndBlocks is a NonEmpty of tuples of cond (Expression) and Block list representing if and else if clauses
         BlIf _ann _span _label _name nEcondAndBlocks maybeElseBlocks _endIfLabel -> 
             execIfClauses sym (NonEmpty.toList nEcondAndBlocks) maybeElseBlocks state
-
+        BlComment _ann _span _comment -> pure [state] 
         -- ...
 
 execStatement :: IsSymExprBuilder sym
@@ -293,6 +300,47 @@ execIfClauses sym condAndBlocks maybeElseBlocks state =
                 _ -> error "logical if condition must evaluate to logical"
 
 
+--converts list of What4 predicates into conjunction of predicates
+pathPredicateOfCondList :: IsExprBuilder sym
+    => sym
+    -> [Pred sym]
+    -> IO (Pred sym)
+pathPredicateOfCondList sym pathCond = recurseConj pathCond
+    where
+        recurseConj [] = pure(truePred sym)
+        recurseConj (p:ps) = do
+            rest <- recurseConj ps
+            andPred sym p rest
+
+checkStateFeasibility ::
+    ExprBuilder t st fs ->
+    SymState (ExprBuilder t st fs) ->
+    IO ()
+checkStateFeasibility sym state = do
+    pathPred <- pathPredicateOfCondList sym (pathCond state)
+    solverResult <- invokeSolver sym pathPred
+    case solverResult of
+        Sat (ge, _) -> putStrLn "Satisfiable." --for now
+        Unsat _ -> putStrLn "Unsatisfiable."
+        Unknown -> putStrLn "Solver failed to find a solution."
+
+
+z3exe :: FilePath
+z3exe = "z3-4.8.12-x86-win/bin/z3.exe"
+
+
+invokeSolver ::
+    ExprBuilder t st fs ->
+    BoolExpr t ->
+    IO (SatResult (GroundEvalFn t, Maybe (ExprRangeBindings t)) ())
+invokeSolver sym f = do
+    withZ3 sym z3exe defaultLogData $ \session -> do
+        assume (sessionWriter session) f
+        runCheckSat session $ \result -> pure result
+
+
+
+
 main :: IO ()
 main = do
     let filename = "test3.f90"
@@ -309,6 +357,9 @@ main = do
 
             Some nonceGen <- newIONonceGenerator
             sym <- newExprBuilder FloatRealRepr EmptyExprBuilderState nonceGen
-
+            extendConfig z3Options (getConfiguration sym)
+            
             states <- execProgramFile sym ast
             printStates states
+
+            mapM_ (checkStateFeasibility sym) states

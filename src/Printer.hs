@@ -40,7 +40,7 @@ printState state = do
     putStrLn "Path condition:"
 
     case pathCond state of
-        [] -> putStrLn "  <true>"
+        [] -> putStrLn "  <true (empty pathCond list)>"
         ps -> mapM_ printPathPred ps
     
     putStrLn ""
