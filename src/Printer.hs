@@ -22,11 +22,11 @@ showSomeExpr expr =
 
 printStates :: IsExpr (SymExpr sym) => [SymState sym] -> IO ()
 printStates states = do
-    putStrLn ("Number of final states: " ++ show (length states))
+    putStrLn ("Number of states: " ++ show (length states))
     mapM_ printNumberedState (zip [(1 :: Int)..] states)
     where
         printNumberedState (i, state) = do
-            putStrLn ("=== Final state " ++ show i ++ " ===")
+            putStrLn ("=== State " ++ show i ++ " ===")
             printState state
 
 printState :: IsExpr (SymExpr sym) => SymState sym -> IO ()

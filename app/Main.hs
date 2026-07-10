@@ -327,7 +327,7 @@ checkStateFeasibility sym state = do
         Unsat _ -> pure (Nothing)
         Unknown -> error "Solver failed to find a solution."
 
---has a logger attached for now
+--has a logger attached for now (bad but oh well)
 keepFeasibleStates ::
     ExprBuilder t st fs ->
     [SymState (ExprBuilder t st fs)] ->
