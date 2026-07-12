@@ -12,4 +12,6 @@ program test3
     else 
         x = -1
     end if
+    x = i / j
+    !@assert x > 0
 end program test3

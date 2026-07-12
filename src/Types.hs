@@ -1,11 +1,15 @@
 module Types
-  ( VarName
-  , SomeExpr(..)
-  , VarType(..)
-  , VarBinding(..)
-  , SymState(..)
-  , emptyState
-  ) where
+    ( VarName
+    , SomeExpr(..)
+    , VarType(..)
+    , VarBinding(..)
+    , ObligationKind(..)
+    , ObligationFlags(..)
+    , Obligation(..)
+    , SymState(..)
+    , isObligationEnabled
+    , emptyState
+    ) where
 
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -31,15 +35,33 @@ data VarBinding sym = VBinding
     , varValue :: Maybe (SomeExpr sym)
     }
 
-data SymState sym = SState
-    { env        :: Map VarName (VarBinding sym)
-    , pathCond   :: [Pred sym]
-    , freshCount :: Int
+
+data ObligationKind = UserAssertions | DivByZero
+    deriving (Eq, Ord, Show)
+
+type ObligationFlags = Map ObligationKind Bool
+
+data Obligation sym = Obligation
+    { obligationKind :: ObligationKind,
+      obligationPredicate :: Pred sym,
+      obligationPath :: [Pred sym]
     }
+
+data SymState sym = SState
+    { env :: Map VarName (VarBinding sym),
+      pathCond :: [Pred sym],
+      obligations :: [Obligation sym],
+      freshCount :: Int
+    }
+
+isObligationEnabled :: ObligationFlags -> ObligationKind -> Bool
+isObligationEnabled flags kind = Map.findWithDefault False kind flags
+
 
 emptyState :: SymState sym
 emptyState = SState
-    { env = Map.empty
-    , pathCond = []
-    , freshCount = 0
+    { env = Map.empty,
+      pathCond = [],
+      obligations = [],
+      freshCount = 0
     }

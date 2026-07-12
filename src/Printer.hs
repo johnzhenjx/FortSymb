@@ -1,49 +1,183 @@
-module Printer (showBinding, showSomeExpr, printState, printStates) where
-    
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+
+module Printer
+    ( showBinding
+    , showSomeExpr
+    , printState
+    , printStates
+    ) where
+
 import qualified Data.Map as Map
 
 import Types
-
 import What4.Interface
 
-showBinding :: IsExpr (SymExpr sym) => VarBinding sym -> String
-showBinding binding =
-    case varValue binding of
-        Nothing -> show (varType binding) ++ ", uninitialised"
-        Just e -> show (varType binding) ++ ", initialised = " ++ showSomeExpr e
 
-showSomeExpr :: IsExpr (SymExpr sym) => SomeExpr sym -> String
+showSymExpr :: IsExpr expr => expr tp -> String
+showSymExpr =
+    show . printSymExpr
+
+
+showBinding ::
+    IsExpr (SymExpr sym) =>
+    VarBinding sym ->
+    String
+showBinding binding =
+    show (varType binding)
+        ++ case varValue binding of
+            Nothing ->
+                ", uninitialised"
+
+            Just value ->
+                ", initialised = " ++ showSomeExpr value
+
+
+showSomeExpr ::
+    IsExpr (SymExpr sym) =>
+    SomeExpr sym ->
+    String
 showSomeExpr expr =
     case expr of
-        SomeInt e -> "int " ++ show (printSymExpr e)
-        SomeReal e -> "real " ++ show (printSymExpr e)
-        SomeBool p -> "bool " ++ show (printSymExpr p)
+        SomeInt e ->
+            "int " ++ showSymExpr e
+
+        SomeReal e ->
+            "real " ++ showSymExpr e
+
+        SomeBool p ->
+            "bool " ++ showSymExpr p
 
 
-printStates :: IsExpr (SymExpr sym) => [SymState sym] -> IO ()
+printStates ::
+    IsExpr (SymExpr sym) =>
+    [SymState sym] ->
+    IO ()
 printStates states = do
     putStrLn ("Number of states: " ++ show (length states))
-    mapM_ printNumberedState (zip [(1 :: Int)..] states)
-    where
-        printNumberedState (i, state) = do
-            putStrLn ("=== State " ++ show i ++ " ===")
-            printState state
+    putStrLn ""
 
-printState :: IsExpr (SymExpr sym) => SymState sym -> IO ()
+    mapM_
+        printNumberedState
+        (zip [(1 :: Int) ..] states)
+  where
+    printNumberedState (index, state) = do
+        putStrLn ("=== State " ++ show index ++ " ===")
+        printState state
+
+
+printState ::
+    IsExpr (SymExpr sym) =>
+    SymState sym ->
+    IO ()
 printState state = do
+    printEnvironment state
+
+    printPredicates
+        "Path conditions:"
+        "<true>"
+        (reverse (pathCond state))
+
+    printObligations
+        (reverse (obligations state))
+
+    putStrLn ""
+
+
+printEnvironment ::
+    IsExpr (SymExpr sym) =>
+    SymState sym ->
+    IO ()
+printEnvironment state = do
     putStrLn "Environment:"
 
-    if Map.null (env state)
-        then putStrLn "  <empty>"
-        else mapM_ printOne (Map.toList (env state))
+    case Map.toList (env state) of
+        [] ->
+            putStrLn "  <empty>"
 
-    putStrLn "Path condition:"
+        bindings ->
+            mapM_ printBinding bindings
+  where
+    printBinding (name, binding) =
+        putStrLn
+            ( "  "
+                ++ name
+                ++ " : "
+                ++ showBinding binding
+            )
 
-    case pathCond state of
-        [] -> putStrLn "  <true (empty pathCond list)>"
-        ps -> mapM_ printPathPred ps
-    
-    putStrLn ""
-    where
-        printOne (name, binding) = putStrLn ("  " ++ name ++ " : " ++ showBinding binding)
-        printPathPred p = putStrLn ("  " ++ show (printSymExpr p))
+
+printPredicates ::
+    IsExpr expr =>
+    String ->
+    String ->
+    [expr BaseBoolType] ->
+    IO ()
+printPredicates heading emptyMessage predicates = do
+    putStrLn heading
+
+    case predicates of
+        [] ->
+            putStrLn ("  " ++ emptyMessage)
+
+        _ ->
+            mapM_
+                printNumberedPredicate
+                (zip [(1 :: Int) ..] predicates)
+  where
+    printNumberedPredicate (index, predicate) =
+        putStrLn
+            ( "  "
+                ++ show index
+                ++ ". "
+                ++ showSymExpr predicate
+            )
+
+
+printObligations ::
+    IsExpr (SymExpr sym) =>
+    [Obligation sym] ->
+    IO ()
+printObligations obligationsToPrint = do
+    putStrLn "Proof obligations:"
+
+    case obligationsToPrint of
+        [] ->
+            putStrLn "  <none>"
+
+        _ ->
+            mapM_
+                printNumberedObligation
+                (zip [(1 :: Int) ..] obligationsToPrint)
+  where
+    printNumberedObligation (index, obligation) = do
+        putStrLn
+            ( "  "
+                ++ show index
+                ++ ". "
+                ++ show (obligationKind obligation)
+            )
+
+        putStrLn
+            ( "     Predicate: "
+                ++ showSymExpr (obligationPredicate obligation)
+            )
+
+        putStrLn "     Path at generation:"
+
+        case reverse (obligationPath obligation) of
+            [] ->
+                putStrLn "       <true>"
+
+            predicates ->
+                mapM_
+                    printPathPredicate
+                    (zip [(1 :: Int) ..] predicates)
+
+    printPathPredicate (index, predicate) =
+        putStrLn
+            ( "       "
+                ++ show index
+                ++ ". "
+                ++ showSymExpr predicate
+            )
