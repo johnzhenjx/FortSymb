@@ -6,6 +6,10 @@ module Printer
     , showSomeExpr
     , printState
     , printStates
+    , printEnvironment
+    , printPredicates
+    , printAllObligationResults
+    , printObligations
     ) where
 
 import qualified Data.Map as Map
@@ -13,14 +17,15 @@ import qualified Data.Map as Map
 import Types
 import What4.Interface
 
+import What4.Expr
+         ( ExprBuilder )
+
 
 showSymExpr :: IsExpr expr => expr tp -> String
-showSymExpr =
-    show . printSymExpr
+showSymExpr = show . printSymExpr
 
 
-showBinding ::
-    IsExpr (SymExpr sym) =>
+showBinding :: IsExpr (SymExpr sym) =>
     VarBinding sym ->
     String
 showBinding binding =
@@ -181,3 +186,99 @@ printObligations obligationsToPrint = do
                 ++ ". "
                 ++ showSymExpr predicate
             )
+
+
+
+printAllObligationResults ::
+    [ [ ( Obligation (ExprBuilder t st fs)
+        , ObligationResult
+        )
+      ]
+    ] ->
+    IO ()
+printAllObligationResults stateResults =
+    printStateResults 1 stateResults
+  where
+    printStateResults stateNumber remainingStateResults =
+        case remainingStateResults of
+            [] ->
+                pure ()
+
+            results : laterResults -> do
+                putStrLn
+                    ("=== Obligation results for state "
+                        ++ show stateNumber
+                        ++ " ==="
+                    )
+
+                printObligationResults 1 results
+
+                putStrLn ""
+
+                printStateResults
+                    (stateNumber + 1)
+                    laterResults
+
+    printObligationResults obligationNumber remainingResults =
+        case remainingResults of
+            [] ->
+                putStrLn "  <none>"
+
+            (obligation, result) : laterResults -> do
+                putStrLn
+                    ( "  "
+                        ++ show obligationNumber
+                        ++ ". "
+                        ++ show (obligationKind obligation)
+                        ++ ": "
+                        ++ resultSummary result
+                    )
+
+                case result of
+                    ObligationValid ->
+                        pure ()
+
+                    ObligationInvalid counterexample ->
+                        printStoredCounterexample
+                            counterexample
+
+                printObligationResults
+                    (obligationNumber + 1)
+                    laterResults
+
+    resultSummary result =
+        case result of
+            ObligationValid ->
+                "Valid"
+
+            ObligationInvalid _ ->
+                "Invalid"
+
+    printStoredCounterexample counterexample =
+        case Map.toList counterexample of
+            [] ->
+                putStrLn "     Counterexample: <empty>"
+
+            variables -> do
+                putStrLn "     Counterexample:"
+                printVariables variables
+
+    printVariables variables =
+        case variables of
+            [] ->
+                pure ()
+
+            (name, maybeValue) : remainingVariables -> do
+                putStrLn
+                    ( "       "
+                        ++ name
+                        ++ " = "
+                        ++ case maybeValue of
+                            Nothing ->
+                                "<uninitialised>"
+
+                            Just value ->
+                                value
+                    )
+
+                printVariables remainingVariables

@@ -27,6 +27,7 @@ library
   exposed-modules:
     EvalExpr
     Printer
+    Solver
     Types
   other-modules:
     Paths_FortSymb

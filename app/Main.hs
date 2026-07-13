@@ -38,10 +38,11 @@ import Prelude hiding (EQ, LT, GT)
 import Types
 import EvalExpr
 import Printer
+import Solver
 
 import qualified Data.List.NonEmpty as NonEmpty
 
-import Control.Monad (filterM)
+import Control.Monad (forM_, filterM)
 
 import Data.Char (isSpace)
 import Data.List (dropWhileEnd, stripPrefix)
@@ -349,23 +350,22 @@ execAssertionString sym flags assertionString state = do
 
     case assertionValue of
         SomeBool predicate -> do
-            let obligation =
-                Obligation
+            let obligation = Obligation
                     { obligationKind = UserAssertions
                     , obligationPredicate = predicate
                     , obligationPath = pathCond newState
                     }
-            finalState = newState { obligations = obligation : obligations newState }
+                finalState = newState { obligations = obligation : obligations newState }
             pure [finalState]
 
-        _ -> error "Assertion is not a logical predicate: " ++ assertionString
+        _ -> error ("Assertion is not a logical predicate: " ++ assertionString)
 
 
 parseAssertionExpression :: String -> Expression ()
 parseAssertionExpression assertionString =
     case byVer Fortran90 "<assertion>" (B.pack assertionProgram) of
         Left parseError ->
-            error "Invalid Fortran assertion:\n" ++ assertionString ++ "\n" ++ show parseError
+            error ("Invalid Fortran assertion:\n" ++ assertionString ++ "\n" ++ show parseError)
         Right programFile -> extractAssertionExpression programFile
   where
     assertionProgram =
@@ -394,82 +394,6 @@ extractAssertionExpression programFile =
                 _ -> findAssertion remainingBlocks
 
 
-
---converts list of What4 predicates into conjunction of predicates
-predicateOfCondList :: IsExprBuilder sym
-    => sym
-    -> [Pred sym]
-    -> IO (Pred sym)
-predicateOfCondList sym pathCond = recurseConj pathCond
-    where
-        recurseConj [] = pure(truePred sym)
-        recurseConj (p:ps) = do
-            rest <- recurseConj ps
-            andPred sym p rest
-
-checkStateFeasibility ::
-    ExprBuilder t st fs ->
-    SymState (ExprBuilder t st fs) ->
-    IO (Maybe (GroundEvalFn t))
-checkStateFeasibility sym state = do
-    pathPred <- predicateOfCondList sym (pathCond state)
-    solverResult <- invokeSolver sym pathPred
-    case solverResult of
-        Sat (ge, _) -> pure (Just ge) --for now
-        Unsat _ -> pure (Nothing)
-        Unknown -> error "Solver failed to find a solution."
-
---has a logger attached for now (bad but oh well)
-keepFeasibleStates ::
-    ExprBuilder t st fs ->
-    [SymState (ExprBuilder t st fs)] ->
-    IO [SymState (ExprBuilder t st fs)]
-keepFeasibleStates sym states = do
-    numberedResults <- filterM isFeasible (zip [(1 :: Int)..] states)
-    pure (map snd numberedResults)
-    where
-        isFeasible (i, state) = do
-            result <- checkStateFeasibility sym state
-            case result of
-                Just _ -> do
-                    putStrLn $ show i ++ ". Satisfiable pathCond"
-                    pure True
-                Nothing -> do
-                    putStrLn $ show i ++ ". Unsatisfiable pathCond"
-                    pure False
-
-
--- checkStateAssertionsValidity ::
---     ExprBuilder t st fs ->
---     SymState (ExprBuilder t st fs) ->
---     Pred (ExprBuilder t st fs) ->
---     IO (Maybe (GroundEvalFn t))
-
--- checkStateAssertionsValidity sym state = do 
---     pathPred <- predicateOfCondList sym (pathCond state)
---     assertionPred <- predicateOfCondList sym (assertions state)
---     negAssertionPred <- notPred sym assertionPred
---     failurePred <- andPred sym pathPred negAssertionPred --pathPred and not assertionPred, assertions are valid if this is unsat
-    
---     solverResult <- invokeSolver sym failurePred
---     case solverResult of
---         Sat (ge, _) -> pure (Just ge) --not valid, ge for counterexample
---         Unsat _ -> pure Nothing
---         Unknown -> error "Solver failed to determine assertion validity."
-
-
-
-z3exe :: FilePath
-z3exe = "z3-4.8.12-x86-win/bin/z3.exe"
-
-invokeSolver ::
-    ExprBuilder t st fs ->
-    BoolExpr t ->
-    IO (SatResult (GroundEvalFn t, Maybe (ExprRangeBindings t)) ())
-invokeSolver sym f = do
-    withZ3 sym z3exe defaultLogData $ \session -> do
-        assume (sessionWriter session) f
-        runCheckSat session $ \result -> pure result
 
 
 
@@ -502,3 +426,6 @@ main = do
 
             feasibleStates <- keepFeasibleStates sym allStates
             printStates feasibleStates
+
+            obligationResults <- evaluateAllStateObligations sym feasibleStates
+            printAllObligationResults obligationResults

@@ -9,6 +9,8 @@ module Types
     , SymState(..)
     , isObligationEnabled
     , emptyState
+    , Counterexample(..)
+    , ObligationResult(..)
     ) where
 
 import Data.Map (Map)
@@ -65,3 +67,11 @@ emptyState = SState
       obligations = [],
       freshCount = 0
     }
+
+
+type Counterexample = Map VarName (Maybe String)
+
+data ObligationResult
+    = ObligationValid
+    | ObligationInvalid Counterexample
+    deriving (Show)
