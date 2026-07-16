@@ -251,3 +251,22 @@ groundEvalSomeExpr ge expression =
         SomeBool e -> do
             value <- groundEval ge e
             pure (show value)
+
+        --for now
+        -- SomeIntArray _ dimensions ->
+        --     pure $
+        --         "<integer array, rank "
+        --             ++ show (length dimensions)
+        --             ++ ">"
+
+        -- SomeRealArray _ dimensions ->
+        --     pure $
+        --         "<real array, rank "
+        --             ++ show (length dimensions)
+        --             ++ ">"
+
+        -- SomeBoolArray _ dimensions ->
+        --     pure $
+        --         "<logical array, rank "
+        --             ++ show (length dimensions)
+        --             ++ ">"

@@ -25,6 +25,7 @@ source-repository head
 
 library
   exposed-modules:
+    Arrays
     EvalExpr
     Printer
     Solver

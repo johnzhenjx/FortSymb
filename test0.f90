@@ -1,4 +1,6 @@
 program test0
+    integer :: x = 2
+    real :: test(x)
     real:: r, pi, vl, sarea
     pi=3.1416
     read *,r 

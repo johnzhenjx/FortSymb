@@ -3,6 +3,7 @@ program test3
     integer :: j
     logical :: b = .false.
     real :: x
+    real :: vec(-1,5)
     read *, j
     if(i > j) b = .true.
     if(i > j) then

@@ -39,6 +39,7 @@ import Types
 import EvalExpr
 import Printer
 import Solver
+import Arrays
 
 import qualified Data.List.NonEmpty as NonEmpty
 
@@ -130,7 +131,7 @@ execStatement sym flags statement state =
 
 
 
-declareVars :: IsExprBuilder sym
+declareVars :: IsSymExprBuilder sym
     => sym
     -> ObligationFlags
     -> TypeSpec a
@@ -145,28 +146,62 @@ declareVars sym flags typeSpec decls state =
             newState <- declareVar sym flags typeSpec d state 
             declareVars sym flags typeSpec ds newState
 
-declareVar :: IsExprBuilder sym
-    => sym
-    -> ObligationFlags
-    -> TypeSpec a
-    -> Declarator a
-    -> SymState sym
-    -> IO (SymState sym)
 
+declareVar :: IsSymExprBuilder sym 
+    => sym 
+    -> ObligationFlags 
+    -> TypeSpec a 
+    -> Declarator a 
+    -> SymState sym 
+    -> IO (SymState sym)
 declareVar sym flags typeSpec decl state =
-    -- only scalar type for now
     case declaratorVariable decl of
         ExpValue _ann _span (ValVariable name) ->
-            case declaratorInitial decl of
-                Nothing -> do
-                    let newState = state { env = Map.insert name (VBinding (getVarType typeSpec) Nothing) (env state) }
-                    pure newState
-                Just initExpr -> do
-                    (rhsBeforeCoerce, state1) <- evalExpr sym flags initExpr state
-                    rhsAfterCoerce <- coerceOnAssignment sym (getVarType typeSpec) rhsBeforeCoerce
-                    let newState = state1 { env = Map.insert name (VBinding (getVarType typeSpec) (Just rhsAfterCoerce)) (env state1) }
-                    pure newState
-        _ -> error "Bad"   
+            case declaratorType decl of
+                ScalarDecl ->
+                    declareScalarVar sym flags typeSpec name (declaratorInitial decl) state
+                ArrayDecl dimensionListInfo ->
+                    declareArrayVar sym flags typeSpec name dimensionListInfo (declaratorInitial decl) state
+        _ -> error "Declaration target is not a variable"
+
+
+declareScalarVar :: IsExprBuilder sym 
+    => sym 
+    -> ObligationFlags 
+    -> TypeSpec a 
+    -> VarName 
+    -> Maybe (Expression a) 
+    -> SymState sym 
+    -> IO (SymState sym)
+declareScalarVar sym flags typeSpec name maybeInitial state =
+    case maybeInitial of
+        Nothing ->
+            pure state { env = Map.insert name (VarBinding (getVarType typeSpec) Nothing) (env state) }
+        Just initialExpr -> do
+            (valueBeforeCoercion, state1) <- evalExpr sym flags initialExpr state
+            valueAfterCoercion <- coerceOnAssignment sym (getVarType typeSpec) valueBeforeCoercion
+            pure state1 { env = Map.insert name (VarBinding (getVarType typeSpec) (Just valueAfterCoercion)) (env state1) }
+
+
+declareArrayVar :: IsSymExprBuilder sym 
+    => sym 
+    -> ObligationFlags 
+    -> TypeSpec a 
+    -> VarName
+    -> AList DimensionDeclarator a
+    -> Maybe (Expression a) 
+    -> SymState sym 
+    -> IO (SymState sym)
+
+declareArrayVar sym flags typeSpec name dimensionListInfo maybeInitial state = do
+    (dimensions, state1) <- evalArrayDimensions sym flags (alistList dimensionListInfo) state
+    case maybeInitial of
+        Nothing -> do
+            arrayValue <- createUninitialisedArray sym name (getVarType typeSpec) dimensions
+            pure state1 { env = Map.insert name (VarBinding (getVarType typeSpec) (Just arrayValue)) (env state1) }
+        
+        Just _ -> error "not implemented"
+
 
 
 
@@ -186,7 +221,7 @@ execAssign sym flags lhs rhs state =
                 Nothing -> error ("Assignment to undeclared variable: " ++ name)
                 Just binding -> do
                     rhsAfterCoerce <- coerceOnAssignment sym (varType binding) rhsBeforeCoerce
-                    let newState = state1 { env = Map.insert name (VBinding (varType binding) (Just rhsAfterCoerce)) (env state1) }
+                    let newState = state1 { env = Map.insert name (VarBinding (varType binding) (Just rhsAfterCoerce)) (env state1) }
                     pure newState
         _ -> error "Left-hand side of assignment must be a variable"
 
@@ -239,7 +274,7 @@ execRead2Var sym name state =
                 inputName = name ++ "_input_" ++ show n
 
             freshVal <- freshInputForType sym inputName (varType binding)
-            let newState = state { env = Map.insert name (VBinding (varType binding) (Just freshVal)) (env state), freshCount = n+1 }
+            let newState = state { env = Map.insert name (VarBinding (varType binding) (Just freshVal)) (env state), freshCount = n+1 }
             pure newState
 
 freshInputForType :: IsSymExprBuilder sym

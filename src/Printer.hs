@@ -15,6 +15,7 @@ module Printer
 import qualified Data.Map as Map
 
 import Types
+import Arrays
 import What4.Interface
 
 import What4.Expr
@@ -38,20 +39,64 @@ showBinding binding =
                 ", initialised = " ++ showSomeExpr value
 
 
-showSomeExpr ::
+showSomeExpr :: IsExpr (SymExpr sym) => SomeExpr sym -> String
+showSomeExpr value =
+    case value of
+        SomeInt expression ->
+            "int " ++ showSymExpr expression
+
+        SomeReal expression ->
+            "real " ++ showSymExpr expression
+
+        SomeBool predicate ->
+            "bool " ++ showSymExpr predicate
+
+        SomeIntArray arrayRecord ->
+            showArrayRecord "integer" arrayRecord
+
+        SomeRealArray arrayRecord ->
+            showArrayRecord "real" arrayRecord
+
+        SomeBoolArray arrayRecord ->
+            showArrayRecord "logical" arrayRecord
+    
+
+showArrayRecord ::
     IsExpr (SymExpr sym) =>
-    SomeExpr sym ->
+    String ->
+    ArrayRecord sym tp ->
     String
-showSomeExpr expr =
-    case expr of
-        SomeInt e ->
-            "int " ++ showSymExpr e
+showArrayRecord elementType arrayRecord =
+    elementType
+        ++ " array"
+        ++ "\n    rank: "
+        ++ show (length dimensions)
+        ++ "\n    dimensions:"
+        ++ showArrayDimensions dimensions
+        ++ "\n    contents: "
+        ++ showSymExpr (arrayContents arrayRecord)
+        ++ "\n    initialisation mask: "
+        ++ showSymExpr (arrayInitMask arrayRecord)
+  where
+    dimensions = arrayDimensions arrayRecord
 
-        SomeReal e ->
-            "real " ++ showSymExpr e
+showArrayDimensions ::
+    IsExpr (SymExpr sym) =>
+    [ArrayDimension sym] ->
+    String
+showArrayDimensions [] =
+    " none"
 
-        SomeBool p ->
-            "bool " ++ showSymExpr p
+showArrayDimensions dimensions =
+    concatMap showNumberedDimension (zip [1 :: Int ..] dimensions)
+  where
+    showNumberedDimension (dimensionNumber, dimension) =
+        "\n        "
+            ++ show dimensionNumber
+            ++ ". lower = "
+            ++ showSymExpr (dimensionLower dimension)
+            ++ ", upper = "
+            ++ showSymExpr (dimensionUpper dimension)
 
 
 printStates ::

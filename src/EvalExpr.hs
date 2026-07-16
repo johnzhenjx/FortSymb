@@ -69,8 +69,8 @@ evalValue sym val state =
         ValVariable name ->
             case Map.lookup name (env state) of
                 Nothing -> error ("Variable not declared: " ++ name)
-                Just (VBinding _ Nothing) -> error ("Variable used before initialisation: " ++ name)
-                Just (VBinding _ (Just e)) -> pure (e, state)
+                Just (VarBinding _ Nothing) -> error ("Variable used before initialisation: " ++ name)
+                Just (VarBinding _ (Just e)) -> pure (e, state)
         ValInteger nStr _kind -> do
             e <- intLit sym (read nStr :: Integer)
             pure (SomeInt e, state)
