@@ -183,6 +183,7 @@ declareScalarVar sym flags typeSpec name maybeInitial state =
             pure state1 { env = Map.insert name (VarBinding (getVarType typeSpec) (Just valueAfterCoercion)) (env state1) }
 
 
+--does not handle integer, dimension(10) :: array1 yet (anno)
 declareArrayVar :: IsSymExprBuilder sym 
     => sym 
     -> ObligationFlags 
@@ -200,8 +201,15 @@ declareArrayVar sym flags typeSpec name dimensionListInfo maybeInitial state = d
             arrayValue <- createUninitialisedArray sym name (getVarType typeSpec) dimensions
             pure state1 { env = Map.insert name (VarBinding (getVarType typeSpec) (Just arrayValue)) (env state1) }
         
-        Just _ -> error "not implemented"
+        Just initExpr ->
+            case initExpr of
+                ExpInitialisation _ann _span elementsInfo -> error "not yet" --normal array init
 
+                _ -> do --assumed to be constant array init (every element filled with expr)
+                    (initValue, state2) <- evalExpr sym flags initExpr state1
+                    coercedValue <- coerceOnAssignment sym (getVarType typeSpec) initValue
+                    arrayValue <- createConstantArray sym dimensions coercedValue
+                    pure state2 { env = Map.insert name (VarBinding (getVarType typeSpec) (Just arrayValue)) (env state2) }
 
 
 

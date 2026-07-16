@@ -7,6 +7,7 @@ module Arrays
   , evalArrayDimensions
   , evalArrayDimension
   , createUninitialisedArray
+  , createConstantArray
   ) where
 
 import Types
@@ -200,6 +201,53 @@ createUninitialisedArray sym name varTy dimensions = do
                         , arrayInitMask = uninitialisedMask
                         , arrayDimensions = dimensions
                         }
+
+
+createConstantArray :: IsExprBuilder sym 
+    => sym 
+    -> [ArrayDimension sym] 
+    -> SomeExpr sym 
+    -> IO (SomeExpr sym)
+createConstantArray sym dimensions initialValue = do
+    initialisedMask <- constantArray sym (Ctx.singleton BaseIntegerRepr) (truePred sym)
+    
+    case initialValue of
+        SomeInt value -> do
+            contents <- constantArray sym (Ctx.singleton BaseIntegerRepr) value
+
+            pure $
+                SomeIntArray ArrayRecord
+                    { arrayContents = contents
+                    , arrayInitMask = initialisedMask
+                    , arrayDimensions = dimensions
+                    }
+
+        SomeReal value -> do
+            contents <- constantArray sym (Ctx.singleton BaseIntegerRepr) value
+
+            pure $
+                SomeRealArray ArrayRecord
+                    { arrayContents = contents
+                    , arrayInitMask = initialisedMask
+                    , arrayDimensions = dimensions
+                    }
+
+        SomeBool value -> do
+            contents <- constantArray sym (Ctx.singleton BaseIntegerRepr) value
+
+            pure $
+                SomeBoolArray ArrayRecord
+                    { arrayContents = contents
+                    , arrayInitMask = initialisedMask
+                    , arrayDimensions = dimensions
+                    }
+
+        SomeIntArray _ -> error "Expected scalar integer initialiser, but got an array"
+
+        SomeRealArray _ -> error "Expected scalar real initialiser, but got an array"
+
+        SomeBoolArray _ -> error "Expected scalar logical initialiser, but got an array"
+
 
 -- --using normal index lists
 -- lookupSomeArray :: IsExprBuilder sym 
