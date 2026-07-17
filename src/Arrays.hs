@@ -8,10 +8,12 @@ module Arrays
   , evalArrayDimension
   , createUninitialisedArray
   , createConstantArray
+  , lookupSomeArray
+  , updateSomeArray
   ) where
 
 import Types
-import EvalExpr
+import {-# SOURCE #-} EvalExpr (evalExpr)
 
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -249,18 +251,92 @@ createConstantArray sym dimensions initialValue = do
         SomeBoolArray _ -> error "Expected scalar logical initialiser, but got an array"
 
 
--- --using normal index lists
--- lookupSomeArray :: IsExprBuilder sym 
+
+-- createArrayFromConstructor :: IsSymExprBuilder sym 
 --     => sym 
---     -> SomeExpr sym 
---     -> [SymExpr sym BaseIntegerType] 
---     -> IO (SomeExpr sym)
--- lookupSomeArray sym arrayExpr indices = case arrayExpr of
---         SomeRealArray array dimensions -> lookupArray SomeReal array dimensions
---         SomeIntArray array dimensions -> lookupArray SomeInt array dimensions
---         SomeBoolArray array dimensions -> lookupArray SomeBool array dimensions
+--     -> ObligationFlags 
+--     -> VarName
+--     -> VarType 
+--     -> [ArrayDimension sym] 
+--     -> [Expression a] 
+--     -> SymState sym 
+--     -> IO (SomeExpr sym, SymState sym)
+-- createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
+--     --assume init array dimensions is equal to actual array
+--     (elementValues, finalState) <- evalConstructorElements elementExprs state
+--     initialisedMask <- constantArray sym (Ctx.singleton BaseIntegerRepr) (truePred sym)
+
+
 --     where
---         lookupArray wrap array dimensions = do
---             flatIndex <- flattenArrayIndices sym dimensions indices
---             value <- arrayLookup sym array (Ctx.singleton flatIndex)
---             pure (wrap value)
+--         evalConstructorElements elementExprs state = case elementExprs of
+--             [] -> pure ([], state)
+--             expr : remainingExprs -> do
+--                 (value, state1) <- evalExpr sym flags expr state
+--                 coercedValue <- coerceOnAssignment sym declaredType value
+--                 (remainingValues, finalState) <- evalConstructorElements remainingExprs state1
+--                 pure ( coercedValue : remainingValues, finalState )
+
+
+
+--using normal index lists
+lookupSomeArray :: IsExprBuilder sym 
+    => sym
+    -> ObligationFlags
+    -> SomeExpr sym 
+    -> [SymExpr sym BaseIntegerType]
+    -> SymState sym
+    -> IO (SomeExpr sym, SymState sym)
+lookupSomeArray sym flags arrayExpr indices state =
+    case arrayExpr of
+        SomeIntArray arrayRecord -> lookupArray sym flags indices SomeInt arrayRecord state
+        SomeRealArray arrayRecord -> lookupArray sym flags indices SomeReal arrayRecord state
+        SomeBoolArray arrayRecord -> lookupArray sym flags indices SomeBool arrayRecord state
+        _ ->
+            error "lookupSomeArray: expression is not an array (or unaccepted array)"
+    --weirdly, i get type error on SomeInt if i dont including sym, flags, indices and state into params for lookupArray -- will have to ask Nikolaus
+    where
+        lookupArray sym flags indices wrap arrayRecord state = do
+            newState <-
+                if isObligationEnabled flags ArrayBounds
+                    then do
+                        inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices
+                        let obligation = Obligation
+                                { obligationKind = ArrayBounds
+                                , obligationPredicate = inBoundsPred
+                                , obligationPath = pathCond state
+                                }
+                        pure state { obligations = obligation : obligations state }
+
+                    else pure state
+
+            flatIndex <- flattenArrayIndices sym (arrayDimensions arrayRecord) indices
+            value <- arrayLookup sym (arrayContents arrayRecord) (Ctx.singleton flatIndex)
+            pure (wrap value, newState)
+
+
+
+--have not implemented state threading yet
+-- updateSomeArray ::
+--     IsExprBuilder sym =>
+--     sym ->
+--     SomeExpr sym ->
+--     [SymExpr sym BaseIntegerType] ->
+--     SomeExpr sym ->
+--     IO (SomeExpr sym)
+-- updateSomeArray sym arrayExpr indices newValue =
+--     case (arrayExpr, newValue) of
+--         (SomeIntArray arrayRecord, SomeInt value) -> updateArray sym indices SomeIntArray arrayRecord value
+--         (SomeRealArray arrayRecord, SomeReal value) -> updateArray sym indices SomeRealArray arrayRecord value --same type error problem as above
+--         (SomeBoolArray arrayRecord, SomeBool value) -> updateArray sym indices SomeBoolArray arrayRecord value
+
+--         (SomeIntArray {}, _) -> error "updateSomeArray: expected an integer value"
+--         (SomeRealArray {}, _) -> error "updateSomeArray: expected a real value"
+--         (SomeBoolArray {}, _) -> error "updateSomeArray: expected a logical value"
+
+--         _ -> error "updateSomeArray: expression is not an array"
+--     where
+--         updateArray sym indices wrap arrayRecord value = do
+--             flatIndex <- flattenArrayIndices sym (arrayDimensions arrayRecord) indices
+--             updatedContents <- arrayUpdate sym (arrayContents arrayRecord) (Ctx.singleton flatIndex) value
+--             updatedInitMask <- arrayUpdate sym (arrayInitMask arrayRecord) (Ctx.singleton flatIndex) (truePred sym)
+--             pure $ wrap arrayRecord { arrayContents = updatedContents, arrayInitMask = updatedInitMask }

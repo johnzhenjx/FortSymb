@@ -157,7 +157,7 @@ declareVar :: IsSymExprBuilder sym
 declareVar sym flags typeSpec decl state =
     case declaratorVariable decl of
         ExpValue _ann _span (ValVariable name) ->
-            case declaratorType decl of
+            case declaratorType decl of  --need to add "dimension" annotator
                 ScalarDecl ->
                     declareScalarVar sym flags typeSpec name (declaratorInitial decl) state
                 ArrayDecl dimensionListInfo ->
@@ -183,7 +183,7 @@ declareScalarVar sym flags typeSpec name maybeInitial state =
             pure state1 { env = Map.insert name (VarBinding (getVarType typeSpec) (Just valueAfterCoercion)) (env state1) }
 
 
---does not handle integer, dimension(10) :: array1 yet (anno)
+--reshape not accepted yet -- scary
 declareArrayVar :: IsSymExprBuilder sym 
     => sym 
     -> ObligationFlags 
@@ -462,6 +462,7 @@ main = do
             let flags = Map.fromList
                     [ (UserAssertions, True)
                     , (DivByZero, True)
+                    , (ArrayBounds, True)
                     ]
 
             allStates <- execProgramFile sym flags ast

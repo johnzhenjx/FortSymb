@@ -20,6 +20,7 @@ import Data.Ratio ((%))
 import Prelude hiding (EQ, LT, GT)
 
 import Types
+import Arrays
 
 
 getVarType :: TypeSpec a -> VarType
@@ -31,7 +32,6 @@ getVarType typeSpec =
         _ -> error "Unsupported declaration type"
 
 
---evaluates AST expressions to What4 symbolic expressions
 --evaluates AST expressions to What4 symbolic expressions
 evalExpr :: IsExprBuilder sym
     => sym
@@ -53,9 +53,56 @@ evalExpr sym flags expr state =
             (v, state1) <- evalExpr sym flags e state
             (result, state2) <- evalUnary sym flags op v state1
             pure (result, state2)
+
+        ExpSubscript _ann _span baseExpr indicesInfo -> evalArraySubscript sym flags baseExpr (alistList indicesInfo) state
         _ ->
             error "Unsupported expression in Fortran subset"
 
+
+evalArraySubscript :: IsExprBuilder sym 
+    => sym 
+    -> ObligationFlags 
+    -> Expression a 
+    -> [Index a] 
+    -> SymState sym 
+    -> IO (SomeExpr sym, SymState sym)
+
+evalArraySubscript sym flags baseExpr indicesExprs state = do
+    arrayExpr <-
+        case baseExpr of
+            ExpValue _ann _span (ValVariable name) ->
+                case Map.lookup name (env state) of
+                    Just binding ->
+                        case varValue binding of
+                            Just value -> pure value
+                            Nothing -> error $ "Array is uninitialised (wtf): " ++ name
+                    Nothing -> error $ "Unknown array variable: " ++ name
+            _ ->
+                error "Unsupported array base expression"
+
+    (indices, state1) <- evalArrayIndices indicesExprs state
+    lookupSomeArray sym flags arrayExpr indices state1
+
+    where
+        evalArrayIndices indices state = case indices of
+            [] -> pure ([], state)
+            indexNode : remainingNodes ->
+                case indexNode of
+                    -- third param Maybe String is for functions/subprocs (?), must be Nothing here
+                    IxSingle _ann _span Nothing indexExpr -> do
+                        (indexValue, state1) <- evalExpr sym flags indexExpr state
+
+                        integerIndex <-
+                            case indexValue of
+                                SomeInt value -> pure value
+                                _ -> error "Array index is not an integer"
+
+                        (remainingIndices, finalState) <- evalArrayIndices remainingNodes state1
+                        pure ( integerIndex : remainingIndices, finalState )
+
+                    --IxRange goes here, to be implemented
+                    _ ->
+                        error "Unsupported array section or index"
 
 
 evalValue :: IsExprBuilder sym
