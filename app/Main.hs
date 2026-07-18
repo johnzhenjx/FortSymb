@@ -248,8 +248,9 @@ declareArrayVar sym flags typeSpec name dimensionListInfo maybeInitial state = d
         
         Just initExpr ->
             case initExpr of
-                ExpInitialisation _ann _span elementsInfo -> error "not yet" --normal array init
-
+                ExpInitialisation _ann _span elementsInfo ->  do
+                    (arrayValue, state1) <- createArrayFromConstructor sym flags name (getVarType typeSpec) dimensions (alistList elementsInfo) state
+                    pure state1 { env = Map.insert name (VarBinding (getVarType typeSpec) (Just arrayValue)) (env state1) }
                 _ -> do --assumed to be constant array init (every element filled with expr)
                     (initValue, state2) <- evalExpr sym flags initExpr state1
                     coercedValue <- coerceOnAssignment sym (getVarType typeSpec) initValue
@@ -479,85 +480,6 @@ preprocessAssertions source =
                 case stripPrefix "!@assert " content of
                     Just predicate ->  Just (indentation, (dropWhileEnd isSpace . dropWhile isSpace) predicate)
                     Nothing -> Nothing
-
-
-
--- execComment ::
---     IsSymExprBuilder sym =>
---     sym ->
---     ObligationFlags ->
---     Comment a ->
---     SymState sym ->
---     IO [SymState sym]
--- execComment sym flags (Comment rawComment) state =
---     case stripPrefix "@assert " (trim rawComment) of
---         Just stmtString
---             | isObligationEnabled flags UserAssertions -> execAssertionString sym flags (trim stmtString) state
---             | otherwise -> pure [state]
---         Nothing -> pure [state]
---     where
---         trim = dropWhileEnd isSpace . dropWhile isSpace
-
-
--- execAssertionString ::
---     IsSymExprBuilder sym =>
---     sym ->
---     ObligationFlags ->
---     String ->
---     SymState sym ->
---     IO [SymState sym]
--- execAssertionString sym flags assertionString state = do
---     let assertionExpr = parseAssertionExpression assertionString
-
---     (assertionValue, newState) <- evalExpr sym flags assertionExpr state
-
---     case assertionValue of
---         SomeBool predicate -> do
---             let obligation = Obligation
---                     { obligationKind = UserAssertions
---                     , obligationPredicate = predicate
---                     , obligationPath = pathCond newState
---                     }
---                 finalState = newState { obligations = obligation : obligations newState }
---             pure [finalState]
-
---         _ -> error ("Assertion is not a logical predicate: " ++ assertionString)
-
-
--- parseAssertionExpression :: String -> Expression ()
--- parseAssertionExpression assertionString =
---     case byVer Fortran90 "<assertion>" (B.pack assertionProgram) of
---         Left parseError ->
---             error ("Invalid Fortran assertion:\n" ++ assertionString ++ "\n" ++ show parseError)
---         Right programFile -> extractAssertionExpression programFile
---   where
---     assertionProgram =
---         unlines
---             [ "program assertion"
---             , "  if (" ++ assertionString ++ ") continue"
---             , "end program assertion"
---             ]
-
--- extractAssertionExpression :: ProgramFile () -> Expression ()
--- extractAssertionExpression programFile =
---     case programFileProgramUnits programFile of
---         [PUMain _ann _span _name blocks _subprograms] ->
---             findAssertion blocks
---         [] -> error "Generated assertion program contains no program unit"
---         _ -> error "Generated assertion program has an unexpected structure"
---     where
---         findAssertion :: [Block ()] -> Expression ()
---         findAssertion [] = error "Could not find generated assertion statement"
---         findAssertion (block : remainingBlocks) =
---             case block of
---                 BlStatement _ann _span _label statement ->
---                     case statement of
---                         StIfLogical _ann _span assertionExpr _body ->  assertionExpr
---                         _ -> findAssertion remainingBlocks
---                 _ -> findAssertion remainingBlocks
-
-
-
 
 
 

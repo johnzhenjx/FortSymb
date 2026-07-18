@@ -5,17 +5,19 @@ module Arrays
   , arrayIndexInBounds
   , arrayIndicesInBounds
   , flattenArrayIndices
+  , unflattenArrayIndex
   , evalArrayIndices
   , evalArrayDimensions
   , evalArrayDimension
   , createUninitialisedArray
   , createConstantArray
+  , createArrayFromConstructor
   , lookupSomeArray
   , updateSomeArray
   ) where
 
 import Types
-import {-# SOURCE #-} EvalExpr (evalExpr)
+import {-# SOURCE #-} EvalExpr (evalExpr, coerceOnAssignment)
 
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -112,6 +114,25 @@ flattenArrayIndices sym dimensions indices =
             extent <- dimensionExtent sym dimension
             intAdd sym thisRank =<< intMul sym otherRanks extent
         _ -> error "Array rank mismatch"
+
+
+
+unflattenArrayIndex :: IsExprBuilder sym
+    => sym
+    -> [ArrayDimension sym]
+    -> SymExpr sym BaseIntegerType
+    -> IO [SymExpr sym BaseIntegerType]
+unflattenArrayIndex sym dimensions flatIndex =
+    go dimensions flatIndex
+    where
+        go [] _ = pure []
+        go (dimension : remainingDimensions) remainingFlatIndex = do
+            extent <- dimensionExtent sym dimension
+            offset <- intMod sym remainingFlatIndex extent
+            nextFlatIndex <- intDiv sym remainingFlatIndex extent
+            index <- intAdd sym (dimensionLower dimension) offset
+            remainingIndices <- go remainingDimensions nextFlatIndex
+            pure (index : remainingIndices)
 
 
 
@@ -290,6 +311,35 @@ createConstantArray sym dimensions initialValue = do
 
 
 
+createArrayFromConstructor :: IsSymExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> VarName
+    -> VarType
+    -> [ArrayDimension sym]
+    -> [Expression a]
+    -> SymState sym
+    -> IO (SomeExpr sym, SymState sym)
+createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
+    initialArray <- createUninitialisedArray sym name declaredType dimensions
+    -- stateWithShapeCheck <- addConstructorShapeObligation dimensions (length elementExprs) state
+    -- ^ should check if the length of initialisation array matches the number of elements in declared array
+    writeConstructorElements initialArray 0 elementExprs state
+
+    where
+        writeConstructorElements arrayExpr flatPosition elementExprs state = 
+            case elementExprs of
+                [] -> pure (arrayExpr, state)
+                (elementExpr : remainingExprs) -> do
+                    (elementValue, state1) <- evalExpr sym flags elementExpr state
+                    coercedValue <- coerceOnAssignment sym declaredType elementValue
+
+                    flatIndex <- intLit sym flatPosition
+                    indices <- unflattenArrayIndex sym dimensions flatIndex
+                    (updatedArray, state2) <- updateSomeArray sym flags arrayExpr indices coercedValue state1
+                    writeConstructorElements updatedArray (flatPosition + 1) remainingExprs state2
+
+    
 -- createArrayFromConstructor :: IsSymExprBuilder sym 
 --     => sym 
 --     -> ObligationFlags 

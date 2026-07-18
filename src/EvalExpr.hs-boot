@@ -12,3 +12,9 @@ evalExpr ::
     Expression a ->
     SymState sym ->
     IO (SomeExpr sym, SymState sym)
+
+coerceOnAssignment :: IsExprBuilder sym
+    => sym
+    -> VarType
+    -> SomeExpr sym
+    -> IO (SomeExpr sym)
