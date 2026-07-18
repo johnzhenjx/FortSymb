@@ -223,15 +223,66 @@ execAssign :: IsExprBuilder sym
 
 execAssign sym flags lhs rhs state =
     case lhs of
-        ExpValue _ann _span (ValVariable name) -> do
-            (rhsBeforeCoerce, state1) <- evalExpr sym flags rhs state
-            case Map.lookup name (env state1) of
-                Nothing -> error ("Assignment to undeclared variable: " ++ name)
-                Just binding -> do
-                    rhsAfterCoerce <- coerceOnAssignment sym (varType binding) rhsBeforeCoerce
-                    let newState = state1 { env = Map.insert name (VarBinding (varType binding) (Just rhsAfterCoerce)) (env state1) }
-                    pure newState
+        ExpValue _ann _span (ValVariable name) -> 
+            execScalarAssign sym flags name rhs state
+
+        ExpSubscript _ann _span baseExpr indicesInfo ->
+            execArrayAssign sym flags baseExpr (alistList indicesInfo) rhs
+                state
+
+
         _ -> error "Left-hand side of assignment must be a variable"
+
+
+execScalarAssign :: IsExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> VarName
+    -> Expression a
+    -> SymState sym
+    -> IO (SymState sym)
+execScalarAssign sym flags name rhs state = do
+    (rhsBeforeCoerce, state1) <- evalExpr sym flags rhs state
+    case Map.lookup name (env state1) of
+        Nothing -> error ("Assignment to undeclared variable: " ++ name)
+        Just binding -> do
+            rhsAfterCoerce <- coerceOnAssignment sym (varType binding) rhsBeforeCoerce
+            pure state1 { env = Map.insert name (VarBinding (varType binding) (Just rhsAfterCoerce)) (env state1) }
+
+-- only supports single element assigns for now
+execArrayAssign :: IsExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> Expression a
+    -> [Index a]
+    -> Expression a
+    -> SymState sym
+    -> IO (SymState sym)
+
+execArrayAssign sym flags baseExpr indexExprs rhs state = do
+    name <-
+        case baseExpr of
+            ExpValue _ann _span (ValVariable arrayName) -> pure arrayName
+            _ -> error "Unsupported array assignment target"
+
+    binding <-
+        case Map.lookup name (env state) of
+            Nothing -> error ("Assignment to undeclared array: " ++ name)
+            Just arrayBinding -> pure arrayBinding
+
+    arrayExpr <-
+        case varValue binding of
+            Nothing -> error ("(wtf): " ++ name)
+            Just value -> pure value
+
+    (indices, state1) <- evalArrayIndices sym flags indexExprs state
+
+    (rhsBeforeCoerce, state2) <- evalExpr sym flags rhs state1
+    rhsAfterCoerce <- coerceOnAssignment sym (arrayElementType arrayExpr) rhsBeforeCoerce
+
+    (updatedArray, state3) <- updateSomeArray sym flags arrayExpr indices rhsAfterCoerce state2
+
+    pure state3 { env = Map.insert name (binding { varValue = Just updatedArray }) (env state3)}
 
 
 

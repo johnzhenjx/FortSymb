@@ -55,6 +55,8 @@ evalExpr sym flags expr state =
             pure (result, state2)
 
         ExpSubscript _ann _span baseExpr indicesInfo -> evalArraySubscript sym flags baseExpr (alistList indicesInfo) state
+        ExpFunctionCall {} ->
+            error "Unsupported expression: function call"
         _ ->
             error "Unsupported expression in Fortran subset"
 
@@ -75,34 +77,13 @@ evalArraySubscript sym flags baseExpr indicesExprs state = do
                     Just binding ->
                         case varValue binding of
                             Just value -> pure value
-                            Nothing -> error $ "Array is uninitialised (wtf): " ++ name
+                            Nothing -> error $ "(wtf): " ++ name
                     Nothing -> error $ "Unknown array variable: " ++ name
             _ ->
                 error "Unsupported array base expression"
 
-    (indices, state1) <- evalArrayIndices indicesExprs state
+    (indices, state1) <- evalArrayIndices sym flags indicesExprs state
     lookupSomeArray sym flags arrayExpr indices state1
-
-    where
-        evalArrayIndices indices state = case indices of
-            [] -> pure ([], state)
-            indexNode : remainingNodes ->
-                case indexNode of
-                    -- third param Maybe String is for functions/subprocs (?), must be Nothing here
-                    IxSingle _ann _span Nothing indexExpr -> do
-                        (indexValue, state1) <- evalExpr sym flags indexExpr state
-
-                        integerIndex <-
-                            case indexValue of
-                                SomeInt value -> pure value
-                                _ -> error "Array index is not an integer"
-
-                        (remainingIndices, finalState) <- evalArrayIndices remainingNodes state1
-                        pure ( integerIndex : remainingIndices, finalState )
-
-                    --IxRange goes here, to be implemented
-                    _ ->
-                        error "Unsupported array section or index"
 
 
 evalValue :: IsExprBuilder sym

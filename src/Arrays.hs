@@ -1,9 +1,11 @@
 module Arrays
-  ( dimensionOffset
+  ( arrayElementType
+  , dimensionOffset
   , dimensionExtent
   , arrayIndexInBounds
   , arrayIndicesInBounds
   , flattenArrayIndices
+  , evalArrayIndices
   , evalArrayDimensions
   , evalArrayDimension
   , createUninitialisedArray
@@ -39,6 +41,15 @@ import What4.Expr
   )
 
 import What4.Expr.Builder
+
+
+arrayElementType :: SomeExpr sym -> VarType
+arrayElementType arrayExpr =
+    case arrayExpr of
+        SomeIntArray _ -> VarInt
+        SomeRealArray _ -> VarReal
+        SomeBoolArray _ -> VarBool
+        _ -> error "arrayElementType expected an array"
 
 dimensionOffset :: IsExprBuilder sym 
     => sym 
@@ -149,6 +160,33 @@ evalArrayDimension sym flags dimensionDecl state = do
                     _ -> error "Array upper bound must be an integer expression"
 
     pure ( ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound }, state2 )
+
+
+evalArrayIndices :: IsExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> [Index a]
+    -> SymState sym
+    -> IO ([SymExpr sym BaseIntegerType], SymState sym)
+evalArrayIndices sym flags indices state = case indices of
+    [] -> pure ([], state)
+    indexNode : remainingNodes ->
+        case indexNode of
+            -- third param Maybe String is for functions/subprocs (?), must be Nothing here
+            IxSingle _ann _span Nothing indexExpr -> do
+                (indexValue, state1) <- evalExpr sym flags indexExpr state
+
+                integerIndex <-
+                    case indexValue of
+                        SomeInt value -> pure value
+                        _ -> error "Array index is not an integer"
+
+                (remainingIndices, finalState) <- evalArrayIndices sym flags remainingNodes state1
+                pure ( integerIndex : remainingIndices, finalState )
+
+            --IxRange goes here, to be implemented
+            _ ->
+                error "Unsupported array section or index"
 
 
 
@@ -315,28 +353,43 @@ lookupSomeArray sym flags arrayExpr indices state =
 
 
 
---have not implemented state threading yet
--- updateSomeArray ::
---     IsExprBuilder sym =>
---     sym ->
---     SomeExpr sym ->
---     [SymExpr sym BaseIntegerType] ->
---     SomeExpr sym ->
---     IO (SomeExpr sym)
--- updateSomeArray sym arrayExpr indices newValue =
---     case (arrayExpr, newValue) of
---         (SomeIntArray arrayRecord, SomeInt value) -> updateArray sym indices SomeIntArray arrayRecord value
---         (SomeRealArray arrayRecord, SomeReal value) -> updateArray sym indices SomeRealArray arrayRecord value --same type error problem as above
---         (SomeBoolArray arrayRecord, SomeBool value) -> updateArray sym indices SomeBoolArray arrayRecord value
+updateSomeArray :: IsExprBuilder sym 
+    => sym
+    -> ObligationFlags
+    -> SomeExpr sym 
+    -> [SymExpr sym BaseIntegerType] 
+    -> SomeExpr sym 
+    -> SymState sym
+    -> IO (SomeExpr sym, SymState sym)
+updateSomeArray sym flags arrayExpr indices newValue state =
+    case (arrayExpr, newValue) of
+        (SomeIntArray arrayRecord, SomeInt value) -> updateArray sym flags indices SomeIntArray arrayRecord value state
+        (SomeRealArray arrayRecord, SomeReal value) -> updateArray sym flags indices SomeRealArray arrayRecord value state 
+            --same type error problem as above
+        (SomeBoolArray arrayRecord, SomeBool value) -> updateArray sym flags indices SomeBoolArray arrayRecord value state
 
---         (SomeIntArray {}, _) -> error "updateSomeArray: expected an integer value"
---         (SomeRealArray {}, _) -> error "updateSomeArray: expected a real value"
---         (SomeBoolArray {}, _) -> error "updateSomeArray: expected a logical value"
+        (SomeIntArray {}, _) -> error "updateSomeArray: expected an integer value"
+        (SomeRealArray {}, _) -> error "updateSomeArray: expected a real value"
+        (SomeBoolArray {}, _) -> error "updateSomeArray: expected a logical value"
 
---         _ -> error "updateSomeArray: expression is not an array"
---     where
---         updateArray sym indices wrap arrayRecord value = do
---             flatIndex <- flattenArrayIndices sym (arrayDimensions arrayRecord) indices
---             updatedContents <- arrayUpdate sym (arrayContents arrayRecord) (Ctx.singleton flatIndex) value
---             updatedInitMask <- arrayUpdate sym (arrayInitMask arrayRecord) (Ctx.singleton flatIndex) (truePred sym)
---             pure $ wrap arrayRecord { arrayContents = updatedContents, arrayInitMask = updatedInitMask }
+        _ -> error "updateSomeArray: expression is not an array"
+    where
+        updateArray sym flags indices wrap arrayRecord value state = do
+            newState <-
+                if isObligationEnabled flags ArrayBounds
+                    then do
+                        inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices
+                        let obligation = Obligation
+                                { obligationKind = ArrayBounds
+                                , obligationPredicate = inBoundsPred
+                                , obligationPath = pathCond state
+                                }
+                        pure state { obligations = obligation : obligations state }
+
+                    else pure state
+
+            flatIndex <- flattenArrayIndices sym (arrayDimensions arrayRecord) indices
+            updatedContents <- arrayUpdate sym (arrayContents arrayRecord) (Ctx.singleton flatIndex) value
+            updatedInitMask <- arrayUpdate sym (arrayInitMask arrayRecord) (Ctx.singleton flatIndex) (truePred sym)
+            let updatedArray = wrap arrayRecord { arrayContents = updatedContents, arrayInitMask = updatedInitMask }
+            pure (updatedArray, newState)

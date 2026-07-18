@@ -1,8 +1,7 @@
 program test3
     integer :: i
-    integer :: j
     real :: vec(-1:3) = 5
-    
-    i = vec(2)
-    !@assert i > j
+    read *, i
+    vec(2) = i
+    !@aaaassert vec(2) > vec(1)
 end program test3
