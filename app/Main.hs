@@ -104,7 +104,8 @@ execBlock sym flags block state =
         --nEcondAndBlocks is a NonEmpty of tuples of cond (Expression) and Block list representing if and else if clauses
         BlIf _ann _span _label _name nEcondAndBlocks maybeElseBlocks _endIfLabel -> 
             execIfClauses sym flags (NonEmpty.toList nEcondAndBlocks) maybeElseBlocks state
-        BlComment _ann _span comment -> execComment sym flags comment state
+        -- BlComment _ann _span comment -> execComment sym flags comment state
+        BlComment _ann _span comment -> pure [state]
         -- ...
 
 
@@ -127,8 +128,52 @@ execStatement sym flags statement state =
             newState <- execRead2s sym maybeReadList state --don't include StRead for now
             pure [newState]
         StIfLogical _ann _span cond stmt -> execIfLogical sym flags cond stmt state --one-line if, ie if(cond) stmt
+        
+        StCall _ann _span procedureExpr argumentsInfo ->
+            case procedureExpr of
+                ExpValue _ann _span (ValVariable "fortsymb_assert") ->
+                    execAssertionArguments sym flags (alistList argumentsInfo) state --assume this will be array of states
+                _ -> error "StCall currently unsupported"
+
+
         _ -> error "Unsupported statement type"
 
+
+
+--take argument list from preprocessed call, convert to predicate and add to user obligations
+execAssertionArguments :: IsSymExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> [Argument a]
+    -> SymState sym
+    -> IO [SymState sym]
+execAssertionArguments sym flags arguments state =
+    case arguments of
+        [Argument _ann _span Nothing (ArgExpr expr)] -> execAssertionExpr sym flags expr state
+        _ ->
+            error "fortsymb_assert expects exactly one argument"
+
+execAssertionExpr :: IsSymExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> Expression a
+    -> SymState sym
+    -> IO [SymState sym]
+execAssertionExpr sym flags assertionExpr state = do
+    (assertionValue, newState) <- evalExpr sym flags assertionExpr state
+
+    case assertionValue of
+        SomeBool predicate -> do
+            let obligation = Obligation
+                    { obligationKind = UserAssertions
+                    , obligationPredicate = predicate
+                    , obligationPath = pathCond newState
+                    }
+
+                finalState = newState { obligations = obligation : obligations newState }
+            pure [finalState]
+
+        _ -> error "Assertion is not a logical predicate"
 
 
 declareVars :: IsSymExprBuilder sym
@@ -413,79 +458,103 @@ execIfClauses sym flags condAndBlocks maybeElseBlocks state =
 
 
 -- !@assert [predicate]
-execComment ::
-    IsSymExprBuilder sym =>
-    sym ->
-    ObligationFlags ->
-    Comment a ->
-    SymState sym ->
-    IO [SymState sym]
-execComment sym flags (Comment rawComment) state =
-    case stripPrefix "@assert " (trim rawComment) of
-        Just stmtString
-            | isObligationEnabled flags UserAssertions -> execAssertionString sym flags (trim stmtString) state
-            | otherwise -> pure [state]
-        Nothing -> pure [state]
+preprocessAssertions :: String -> String
+preprocessAssertions source =
+    unlines (map rewriteLine (lines source))
     where
-        trim = dropWhileEnd isSpace . dropWhile isSpace
+        rewriteLine line =
+            case breakAssertionComment line of
+                Just (indentation, predicate) ->
+                    indentation --keep indentation to preserve scope
+                        ++ "call fortsymb_assert("
+                        ++ predicate
+                        ++ ")"
+                Nothing -> line
+
+        breakAssertionComment :: String -> Maybe (String, String)
+        breakAssertionComment line =
+            let indentation = takeWhile isSpace line
+                content = dropWhile isSpace line
+            in
+                case stripPrefix "!@assert " content of
+                    Just predicate ->  Just (indentation, (dropWhileEnd isSpace . dropWhile isSpace) predicate)
+                    Nothing -> Nothing
 
 
-execAssertionString ::
-    IsSymExprBuilder sym =>
-    sym ->
-    ObligationFlags ->
-    String ->
-    SymState sym ->
-    IO [SymState sym]
-execAssertionString sym flags assertionString state = do
-    let assertionExpr = parseAssertionExpression assertionString
 
-    (assertionValue, newState) <- evalExpr sym flags assertionExpr state
-
-    case assertionValue of
-        SomeBool predicate -> do
-            let obligation = Obligation
-                    { obligationKind = UserAssertions
-                    , obligationPredicate = predicate
-                    , obligationPath = pathCond newState
-                    }
-                finalState = newState { obligations = obligation : obligations newState }
-            pure [finalState]
-
-        _ -> error ("Assertion is not a logical predicate: " ++ assertionString)
+-- execComment ::
+--     IsSymExprBuilder sym =>
+--     sym ->
+--     ObligationFlags ->
+--     Comment a ->
+--     SymState sym ->
+--     IO [SymState sym]
+-- execComment sym flags (Comment rawComment) state =
+--     case stripPrefix "@assert " (trim rawComment) of
+--         Just stmtString
+--             | isObligationEnabled flags UserAssertions -> execAssertionString sym flags (trim stmtString) state
+--             | otherwise -> pure [state]
+--         Nothing -> pure [state]
+--     where
+--         trim = dropWhileEnd isSpace . dropWhile isSpace
 
 
-parseAssertionExpression :: String -> Expression ()
-parseAssertionExpression assertionString =
-    case byVer Fortran90 "<assertion>" (B.pack assertionProgram) of
-        Left parseError ->
-            error ("Invalid Fortran assertion:\n" ++ assertionString ++ "\n" ++ show parseError)
-        Right programFile -> extractAssertionExpression programFile
-  where
-    assertionProgram =
-        unlines
-            [ "program assertion"
-            , "  if (" ++ assertionString ++ ") continue"
-            , "end program assertion"
-            ]
+-- execAssertionString ::
+--     IsSymExprBuilder sym =>
+--     sym ->
+--     ObligationFlags ->
+--     String ->
+--     SymState sym ->
+--     IO [SymState sym]
+-- execAssertionString sym flags assertionString state = do
+--     let assertionExpr = parseAssertionExpression assertionString
 
-extractAssertionExpression :: ProgramFile () -> Expression ()
-extractAssertionExpression programFile =
-    case programFileProgramUnits programFile of
-        [PUMain _ann _span _name blocks _subprograms] ->
-            findAssertion blocks
-        [] -> error "Generated assertion program contains no program unit"
-        _ -> error "Generated assertion program has an unexpected structure"
-    where
-        findAssertion :: [Block ()] -> Expression ()
-        findAssertion [] = error "Could not find generated assertion statement"
-        findAssertion (block : remainingBlocks) =
-            case block of
-                BlStatement _ann _span _label statement ->
-                    case statement of
-                        StIfLogical _ann _span assertionExpr _body ->  assertionExpr
-                        _ -> findAssertion remainingBlocks
-                _ -> findAssertion remainingBlocks
+--     (assertionValue, newState) <- evalExpr sym flags assertionExpr state
+
+--     case assertionValue of
+--         SomeBool predicate -> do
+--             let obligation = Obligation
+--                     { obligationKind = UserAssertions
+--                     , obligationPredicate = predicate
+--                     , obligationPath = pathCond newState
+--                     }
+--                 finalState = newState { obligations = obligation : obligations newState }
+--             pure [finalState]
+
+--         _ -> error ("Assertion is not a logical predicate: " ++ assertionString)
+
+
+-- parseAssertionExpression :: String -> Expression ()
+-- parseAssertionExpression assertionString =
+--     case byVer Fortran90 "<assertion>" (B.pack assertionProgram) of
+--         Left parseError ->
+--             error ("Invalid Fortran assertion:\n" ++ assertionString ++ "\n" ++ show parseError)
+--         Right programFile -> extractAssertionExpression programFile
+--   where
+--     assertionProgram =
+--         unlines
+--             [ "program assertion"
+--             , "  if (" ++ assertionString ++ ") continue"
+--             , "end program assertion"
+--             ]
+
+-- extractAssertionExpression :: ProgramFile () -> Expression ()
+-- extractAssertionExpression programFile =
+--     case programFileProgramUnits programFile of
+--         [PUMain _ann _span _name blocks _subprograms] ->
+--             findAssertion blocks
+--         [] -> error "Generated assertion program contains no program unit"
+--         _ -> error "Generated assertion program has an unexpected structure"
+--     where
+--         findAssertion :: [Block ()] -> Expression ()
+--         findAssertion [] = error "Could not find generated assertion statement"
+--         findAssertion (block : remainingBlocks) =
+--             case block of
+--                 BlStatement _ann _span _label statement ->
+--                     case statement of
+--                         StIfLogical _ann _span assertionExpr _body ->  assertionExpr
+--                         _ -> findAssertion remainingBlocks
+--                 _ -> findAssertion remainingBlocks
 
 
 
@@ -497,7 +566,9 @@ main = do
     let filename = "test3.f90"
     contents <- B.readFile filename
 
-    case byVer Fortran90 filename contents of
+    let transformedSource = B.pack (preprocessAssertions (B.unpack contents))
+
+    case byVer Fortran90 filename transformedSource of
         Left err -> do
             putStrLn "Parse error:"
             print err
