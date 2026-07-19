@@ -259,7 +259,7 @@ declareArrayVar sym flags typeSpec name dimensionListInfo maybeInitial state = d
 
 
 
-execAssign :: IsExprBuilder sym
+execAssign :: IsSymExprBuilder sym
   => sym
   -> ObligationFlags
   -> Expression a
@@ -270,33 +270,52 @@ execAssign :: IsExprBuilder sym
 execAssign sym flags lhs rhs state =
     case lhs of
         ExpValue _ann _span (ValVariable name) -> 
-            execScalarAssign sym flags name rhs state
+            execVariableAssign sym flags name rhs state
 
         ExpSubscript _ann _span baseExpr indicesInfo ->
-            execArrayAssign sym flags baseExpr (alistList indicesInfo) rhs
-                state
+            execArrayElementAssign sym flags baseExpr (alistList indicesInfo) rhs state
 
 
         _ -> error "Left-hand side of assignment must be a variable"
+
+
+execVariableAssign ::
+    IsSymExprBuilder sym =>
+    sym ->
+    ObligationFlags ->
+    VarName ->
+    Expression a ->
+    SymState sym ->
+    IO (SymState sym)
+execVariableAssign sym flags name rhs state =
+    case Map.lookup name (env state) of
+        Nothing ->
+            error $ "Assignment to undeclared variable: " ++ name
+
+        Just binding ->
+            case varValue binding of
+                Just SomeIntArray{} -> execWholeArrayAssign sym flags name binding rhs state
+                Just SomeRealArray{} -> execWholeArrayAssign sym flags name binding rhs state
+                Just SomeBoolArray{} -> execWholeArrayAssign sym flags name binding rhs state
+                _ ->  execScalarAssign sym flags name binding rhs state
 
 
 execScalarAssign :: IsExprBuilder sym
     => sym
     -> ObligationFlags
     -> VarName
+    -> VarBinding sym
     -> Expression a
     -> SymState sym
     -> IO (SymState sym)
-execScalarAssign sym flags name rhs state = do
+execScalarAssign sym flags name binding rhs state = do
     (rhsBeforeCoerce, state1) <- evalExpr sym flags rhs state
-    case Map.lookup name (env state1) of
-        Nothing -> error ("Assignment to undeclared variable: " ++ name)
-        Just binding -> do
-            rhsAfterCoerce <- coerceOnAssignment sym (varType binding) rhsBeforeCoerce
-            pure state1 { env = Map.insert name (VarBinding (varType binding) (Just rhsAfterCoerce)) (env state1) }
+    rhsAfterCoerce <- coerceOnAssignment sym (varType binding) rhsBeforeCoerce
+    pure state1 { env = Map.insert name (VarBinding (varType binding) (Just rhsAfterCoerce)) (env state1) }
+                    
 
 -- only supports single element assigns for now
-execArrayAssign :: IsExprBuilder sym
+execArrayElementAssign :: IsExprBuilder sym
     => sym
     -> ObligationFlags
     -> Expression a
@@ -305,7 +324,7 @@ execArrayAssign :: IsExprBuilder sym
     -> SymState sym
     -> IO (SymState sym)
 
-execArrayAssign sym flags baseExpr indexExprs rhs state = do
+execArrayElementAssign sym flags baseExpr indexExprs rhs state = do
     name <-
         case baseExpr of
             ExpValue _ann _span (ValVariable arrayName) -> pure arrayName
@@ -330,6 +349,86 @@ execArrayAssign sym flags baseExpr indexExprs rhs state = do
 
     pure state3 { env = Map.insert name (binding { varValue = Just updatedArray }) (env state3)}
 
+
+execWholeArrayAssign ::
+    IsSymExprBuilder sym =>
+    sym ->
+    ObligationFlags ->
+    VarName ->
+    VarBinding sym ->
+    Expression a ->
+    SymState sym ->
+    IO (SymState sym)
+execWholeArrayAssign sym flags name binding initExpr state = do
+    arrayExpr <-
+        case varValue binding of
+            Nothing -> error ("(wtf): " ++ name)
+            Just value -> pure value
+
+    let dimensions =
+            case arrayExpr of
+                SomeIntArray rec -> arrayDimensions rec
+                SomeRealArray rec -> arrayDimensions rec
+                SomeBoolArray rec -> arrayDimensions rec
+                _ -> error $ "Expected array expression: " ++ name
+
+    case initExpr of
+            --explicit assign, e.g. vec = [1,2,3]
+            ExpInitialisation _ann _span elementsInfo ->  do
+                (arrayValue, state1) <- 
+                    createArrayFromConstructor sym flags name (varType binding) dimensions (alistList elementsInfo) state
+                pure state1 { env = Map.insert name (VarBinding (varType binding) (Just arrayValue)) (env state1) }
+                
+            _ -> do
+                (initValue, state1) <- evalExpr sym flags initExpr state
+                (arrayValue, state2) <-
+                    case initValue of
+                        SomeIntArray _ -> error "array copy not supported yet due to complicated shape obligations"
+                        SomeRealArray _ -> error "array copy not supported yet due to complicated shape obligations"
+                        SomeBoolArray _ -> error "array copy not supported yet due to complicated shape obligations"
+                        _ -> do --constant array assign (every element filled with expr)
+                            coercedValue <- coerceOnAssignment sym (varType binding) initValue
+                            arrayValue <- createConstantArray sym dimensions coercedValue
+                            pure (arrayValue, state1)
+
+                pure state2 { env = Map.insert name (VarBinding (varType binding) (Just arrayValue)) (env state2) }
+
+    -- where
+    --     copyWholeArray :: SomeExpr sym -> SomeExpr sym -> SomeExpr sym
+    --     copyWholeArray destination source =
+    --         case (destination, source) of
+    --             (SomeIntArray destinationRec, SomeIntArray sourceRec) ->
+    --                 SomeIntArray
+    --                     destinationRec
+    --                         { arrayContents = arrayContents sourceRec
+    --                         , arrayInitMask = arrayInitMask sourceRec
+    --                         }
+
+    --             (SomeRealArray destinationRec, SomeRealArray sourceRec) ->
+    --                 SomeRealArray
+    --                     destinationRec
+    --                         { arrayContents = arrayContents sourceRec
+    --                         , arrayInitMask = arrayInitMask sourceRec
+    --                         }
+
+    --             (SomeBoolArray destinationRec, SomeBoolArray sourceRec) ->
+    --                 SomeBoolArray
+    --                     destinationRec
+    --                         { arrayContents = arrayContents sourceRec
+    --                         , arrayInitMask = arrayInitMask sourceRec
+    --                         }
+
+    --             (SomeIntArray _, _) ->
+    --                 error "Expected an integer array"
+
+    --             (SomeRealArray _, _) ->
+    --                 error "Expected a real array"
+
+    --             (SomeBoolArray _, _) ->
+    --                 error "Expected a logical array"
+
+    --             _ ->
+    --                 error "Expected destination array"
 
 
 execRead2s :: IsSymExprBuilder sym

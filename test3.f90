@@ -1,7 +1,8 @@
 program test3
     integer :: i
     integer :: j
-    integer :: a(-1:2) = [1, 2, 3, 4]
+    integer :: a(-1:2)
+    a = 1
     read *, i
     read*, j
     a(i) = j

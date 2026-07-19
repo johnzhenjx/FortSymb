@@ -101,17 +101,8 @@
 - Real arrays
 - Logical arrays
 
-### Array Declarations
-
-- One-dimensional arrays
-- Multidimensional arrays
-- Explicit lower and upper bounds
-- Default lower bound of `1`
-- Constant scalar initialisation of every array element
-- Array-constructor initialisation
-- Constructor elements converted to the declared array element type
-- Constructor shape checking against the declared array size
-- Symbolic shape obligations when the declared array size is symbolic
+### Array Declarations + Initialisations
+- Multidimensional arrays, initially uninitialised, constant scalar init + assign, array-constructor init + assign
 
 Examples:
 
@@ -148,7 +139,6 @@ matrix(2, 2) = 4
 - Reading a single array element
 - Symbolic array indices
 - Multidimensional indexing
-- Explicit lower-bound handling
 - Bounds checking for every dimension
 
 Examples:
@@ -162,10 +152,7 @@ x = matrix(i, j)
 
 - Updating a single array element
 - Symbolic update indices
-- Multidimensional single-element updates
-- Assignment conversion based on the array element type
-- Bounds checking on updates
-- Initialisation-mask updates when an array element is assigned
+- Bounds checking for every dimension
 
 Examples:
 
@@ -176,18 +163,13 @@ matrix(i, j) = value
 
 ### Array Constructor Limitations
 
-Currently supported constructors contain an explicit list of scalar expressions:
-
-```fortran
-integer :: values(3) = [1, 2, 3]
-real :: values2(3) = [1, 2.5, 3]
-```
-
 The following constructor features are not currently supported:
 
 - Implied-`do` constructors
 - Nested array constructors
-- Array-valued constructor elements
+- Array copy constructors
+- Shape obligations on vector-constructor and assignment
+- Reshape init + assign
 - Constructor type specifications
 - Character array constructors
 - Complex array constructors
