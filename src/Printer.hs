@@ -69,8 +69,8 @@ showArrayRecord ::
 showArrayRecord elementType arrayRecord =
     elementType
         ++ " array"
-        ++ "\n    rank: "
-        ++ show (length dimensions)
+        -- ++ "\n    rank: "
+        -- ++ show (length dimensions)
         ++ "\n    dimensions:"
         ++ showArrayDimensions dimensions
         ++ "\n    contents: "

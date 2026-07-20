@@ -52,9 +52,7 @@ predicateOfCondList sym conditions =
             pure (truePred sym)
 
         predicate : remainingConditions -> do
-            remainingPredicate <-
-                predicateOfCondList sym remainingConditions
-
+            remainingPredicate <- predicateOfCondList sym remainingConditions
             andPred sym predicate remainingPredicate
 
 

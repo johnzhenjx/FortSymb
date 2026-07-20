@@ -96,36 +96,8 @@
 
 ### Array Declarations + Initialisations
 - Multidimensional arrays, initially uninitialised, constant scalar init + assign, array-constructor init + assign
+- Allocatable arrays
 
-Examples:
-
-```fortran
-real :: vec(5)
-real :: vec(-1:3)
-integer :: matrix(2, 3) = 0
-logical :: flags(10) = .false.
-
-integer :: values(3) = [1, 2, 3]
-real :: coefficients(3) = [1, 2.5, 3]
-integer :: matrix2(2, 2) = [1, 2, 3, 4]
-```
-
-Array-constructor elements are assigned in Fortran array-element order, with the first dimension varying fastest.
-
-For example:
-
-```fortran
-integer :: matrix(2, 2) = [1, 2, 3, 4]
-```
-
-corresponds to:
-
-```fortran
-matrix(1, 1) = 1
-matrix(2, 1) = 2
-matrix(1, 2) = 3
-matrix(2, 2) = 4
-```
 
 ### Array Access
 
@@ -134,12 +106,6 @@ matrix(2, 2) = 4
 - Multidimensional indexing
 - Bounds checking for every dimension
 
-Examples:
-
-```fortran
-x = vec(i)
-x = matrix(i, j)
-```
 
 ### Array Updates
 
@@ -177,8 +143,6 @@ The following constructor features are not currently supported:
 - Nested or array-valued constructor elements
 - Element-wise array arithmetic
 - Scalar broadcasting in array expressions
-- Dynamic allocation
-- Allocatable arrays
 - Assumed-shape arrays
 - Functions and subroutines
 - General procedure calls
