@@ -138,11 +138,10 @@ The following constructor features are not currently supported:
 - Array sections and slices
 - Whole-array assignment
 - Assigning a matrix row or column to a vector
-- `IxRange` expressions such as `a(:)` or `a(1:5)`
+- `IxRange` expressions for assign, e.g. `a(1:5)`
 - Implied-`do` array constructors
 - Nested or array-valued constructor elements
 - Element-wise array arithmetic
-- Scalar broadcasting in array expressions
 - Assumed-shape arrays
 - Functions and subroutines
 - General procedure calls
