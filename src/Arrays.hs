@@ -55,9 +55,15 @@ dimensionExtent :: IsExprBuilder sym
     -> IO (SymExpr sym BaseIntegerType)
 dimensionExtent sym dimension = do
     difference <- intSub sym (dimensionUpper dimension) (dimensionLower dimension)
-    one <- intLit sym 1
-    intAdd sym difference one
 
+    one <- intLit sym 1
+    rawExtent <- intAdd sym difference one
+
+    zero <- intLit sym 0
+    isNegative <- intLt sym rawExtent zero
+
+    baseTypeIte sym isNegative zero rawExtent
+    --clamps at 0, ie in fortran, vec(1:-1) is a zero-sized array
 
 --one dimension, one index
 arrayIndexInBounds :: IsExprBuilder sym 
