@@ -249,8 +249,8 @@ declareArrayVar sym flags typeSpec name dimensionListInfo maybeInitial state = d
         Just initExpr ->
             case initExpr of
                 ExpInitialisation _ann _span elementsInfo ->  do
-                    (arrayValue, state1) <- createArrayFromConstructor sym flags name (getVarType typeSpec) dimensions (alistList elementsInfo) state
-                    pure state1 { env = Map.insert name (VarBinding (getVarType typeSpec) (Just arrayValue)) (env state1) }
+                    (arrayValue, state2) <- createArrayFromConstructor sym flags name (getVarType typeSpec) dimensions (alistList elementsInfo) state1
+                    pure state2 { env = Map.insert name (VarBinding (getVarType typeSpec) (Just arrayValue)) (env state2) }
                 _ -> do --assumed to be constant array init (every element filled with expr)
                     (initValue, state2) <- evalExpr sym flags initExpr state1
                     coercedValue <- coerceOnAssignment sym (getVarType typeSpec) initValue
@@ -606,6 +606,7 @@ main = do
                     [ (UserAssertions, True)
                     , (DivByZero, True)
                     , (ArrayBounds, True)
+                    , (ArrayShape, True)
                     ]
 
             allStates <- execProgramFile sym flags ast

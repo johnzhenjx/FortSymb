@@ -30,19 +30,7 @@ import What4.Symbol
 
 import Language.Fortran.AST
 
-import What4.Expr
-  ( ExprBuilder
-  , FloatModeRepr(..)
-  , newExprBuilder
-  , BoolExpr
-  , GroundValue
-  , groundEval
-  , EmptyExprBuilderState(..)
-  , GroundEvalFn
-  , ExprRangeBindings
-  )
-
-import What4.Expr.Builder
+import Control.Monad 
 
 
 arrayElementType :: SomeExpr sym -> VarType
@@ -322,9 +310,9 @@ createArrayFromConstructor :: IsSymExprBuilder sym
     -> IO (SomeExpr sym, SymState sym)
 createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
     initialArray <- createUninitialisedArray sym name declaredType dimensions
-    -- stateWithShapeCheck <- addConstructorShapeObligation dimensions (length elementExprs) state
-    -- ^ should check if the length of initialisation array matches the number of elements in declared array
-    writeConstructorElements initialArray 0 elementExprs state
+    stateWithShapeCheck <- addConstructorShapeObligation sym flags dimensions (length elementExprs) state
+    -- ^ checks if the length of initialisation array matches the number of elements in declared array
+    writeConstructorElements initialArray 0 elementExprs stateWithShapeCheck
 
     where
         writeConstructorElements arrayExpr flatPosition elementExprs state = 
@@ -339,30 +327,23 @@ createArrayFromConstructor sym flags name declaredType dimensions elementExprs s
                     (updatedArray, state2) <- updateSomeArray sym flags arrayExpr indices coercedValue state1
                     writeConstructorElements updatedArray (flatPosition + 1) remainingExprs state2
 
-    
--- createArrayFromConstructor :: IsSymExprBuilder sym 
---     => sym 
---     -> ObligationFlags 
---     -> VarName
---     -> VarType 
---     -> [ArrayDimension sym] 
---     -> [Expression a] 
---     -> SymState sym 
---     -> IO (SomeExpr sym, SymState sym)
--- createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
---     --assume init array dimensions is equal to actual array
---     (elementValues, finalState) <- evalConstructorElements elementExprs state
---     initialisedMask <- constantArray sym (Ctx.singleton BaseIntegerRepr) (truePred sym)
 
+        addConstructorShapeObligation sym flags dimensions constructorLength state
+            | not (isObligationEnabled flags ArrayShape) = pure state
+            | otherwise = do
+                extents <- mapM (dimensionExtent sym) dimensions
+                one <- intLit sym 1
+                arraySize <- foldM (intMul sym) one extents
+                suppliedSize <- intLit sym (toInteger constructorLength)
+                shapeMatches <- isEq sym arraySize suppliedSize
+                
+                let obligation = Obligation
+                        { obligationKind = ArrayBounds
+                        , obligationPredicate = shapeMatches
+                        , obligationPath = pathCond state
+                        }
 
---     where
---         evalConstructorElements elementExprs state = case elementExprs of
---             [] -> pure ([], state)
---             expr : remainingExprs -> do
---                 (value, state1) <- evalExpr sym flags expr state
---                 coercedValue <- coerceOnAssignment sym declaredType value
---                 (remainingValues, finalState) <- evalConstructorElements remainingExprs state1
---                 pure ( coercedValue : remainingValues, finalState )
+                pure state { obligations = obligation : obligations state }
 
 
 

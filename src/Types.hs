@@ -67,7 +67,7 @@ data VarBinding sym = VarBinding
     }
 
 
-data ObligationKind = UserAssertions | DivByZero | ArrayBounds
+data ObligationKind = UserAssertions | DivByZero | ArrayBounds | ArrayShape
     deriving (Eq, Ord, Show)
 
 type ObligationFlags = Map ObligationKind Bool

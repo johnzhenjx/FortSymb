@@ -68,23 +68,16 @@
 - Nested conditionals
 - Symbolic branching into multiple execution states
 
-## Assertions
-
-- User assertions written as comments using:
-
-```fortran
-!@assert condition
-```
-
-- Assertions over symbolic program values
-- Assertion checking under the path conditions of each execution state
-- Counterexample generation for failing assertions
 
 ## Proof Obligations
 
 - Division-by-zero checks
-- Array-bounds checks
-- User assertion checks
+- Array-bounds checks (indexing outside bounds)
+- Array-shape checks (on assignment to arrays)
+- User assertion checks 
+```fortran
+!@assert condition
+```
 
 ## Solver Support
 
