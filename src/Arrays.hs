@@ -1,20 +1,4 @@
-module Arrays
-  ( arrayElementType
-  , dimensionOffset
-  , dimensionExtent
-  , arrayIndexInBounds
-  , arrayIndicesInBounds
-  , flattenArrayIndices
-  , unflattenArrayIndex
-  , evalArrayIndices
-  , evalArrayDimensions
-  , evalArrayDimension
-  , createUninitialisedArray
-  , createConstantArray
-  , createArrayFromConstructor
-  , lookupSomeArray
-  , updateSomeArray
-  ) where
+module Arrays where
 
 import Types
 import {-# SOURCE #-} EvalExpr (evalExpr, coerceOnAssignment)

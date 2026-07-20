@@ -1,16 +1,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 
-module Printer
-    ( showBinding
-    , showSomeExpr
-    , printState
-    , printStates
-    , printEnvironment
-    , printPredicates
-    , printAllObligationResults
-    , printObligations
-    ) where
+module Printer where
 
 import qualified Data.Map as Map
 

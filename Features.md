@@ -95,7 +95,8 @@
 - Logical arrays
 
 ### Array Declarations + Initialisations
-- Multidimensional arrays, initially uninitialised, constant scalar init + assign, array-constructor init + assign
+- Multidimensional arrays, with dimensions listed in attribute or on name
+- Can be initially uninitialised, constant scalar init + assign, array-constructor init + assign
 - Allocatable arrays
 
 

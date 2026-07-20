@@ -1,22 +1,6 @@
 {-# LANGUAGE TypeOperators #-}
 
-module Types
-    ( VarName
-    , IntegerIndex
-    , ArrayDimension(..)
-    , ArrayRecord(..)
-    , SomeExpr(..)
-    , VarType(..)
-    , VarBinding(..)
-    , ObligationKind(..)
-    , ObligationFlags(..)
-    , Obligation(..)
-    , SymState(..)
-    , isObligationEnabled
-    , emptyState
-    , Counterexample(..)
-    , ObligationResult(..)
-    ) where
+module Types where
 
 import Data.Map (Map)
 import qualified Data.Map as Map

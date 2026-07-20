@@ -40,6 +40,7 @@ import EvalExpr
 import Printer
 import Solver
 import Arrays
+import Attributes
 
 import qualified Data.List.NonEmpty as NonEmpty
 
@@ -107,7 +108,6 @@ execBlock sym flags block state =
         -- BlComment _ann _span comment -> execComment sym flags comment state
         BlComment _ann _span comment -> pure [state]
         -- ...
-
 
 execStatement :: IsSymExprBuilder sym
     => sym
@@ -280,7 +280,11 @@ declareVar sym flags typeSpec attributes decl state =
         ExpValue _ann _span (ValVariable name) ->
             case declaratorType decl of  --need to add "dimension" annotator
                 ScalarDecl ->
-                    declareScalarVar sym flags typeSpec name (declaratorInitial decl) state
+                    case attributeDimensions attributes of
+                        Just dimensionListInfo ->
+                            declareArrayVar sym flags typeSpec attributes name dimensionListInfo (declaratorInitial decl) state
+                        Nothing ->
+                            declareScalarVar sym flags typeSpec name (declaratorInitial decl) state
                 ArrayDecl dimensionListInfo ->
                     declareArrayVar sym flags typeSpec attributes name dimensionListInfo (declaratorInitial decl) state
         _ -> error "Declaration target is not a variable"
@@ -317,7 +321,7 @@ declareArrayVar :: IsSymExprBuilder sym
     -> IO (SymState sym)
 
 declareArrayVar sym flags typeSpec attributes name dimensionListInfo maybeInitial state
-    | any isAllocatable attributes = pure state { env = Map.insert name (VarBinding arrayType Nothing) (env state) }
+    | isAllocatable attributes = pure state { env = Map.insert name (VarBinding arrayType Nothing) (env state) }
 
     | otherwise = do
         (dimensions, state1) <- evalArrayDimensions sym flags (alistList dimensionListInfo) state
@@ -345,9 +349,6 @@ declareArrayVar sym flags typeSpec attributes name dimensionListInfo maybeInitia
                         pure state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }
     where
         arrayType = VarArray (getVarType typeSpec) (length (alistList dimensionListInfo))
-
-        isAllocatable (AttrAllocatable _ _) = True
-        isAllocatable _ = False
 
 
 

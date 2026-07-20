@@ -1,12 +1,4 @@
-module EvalExpr
-    ( getVarType
-    , evalExpr
-    , evalValue
-    , evalBinary
-    , evalUnary
-    , promoteNumeric
-    , coerceOnAssignment
-    ) where
+module EvalExpr where
 
 import qualified Data.Map as Map
 
