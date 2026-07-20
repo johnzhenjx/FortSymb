@@ -136,7 +136,6 @@ The following constructor features are not currently supported:
 ## Currently Unsupported Features
 
 - Array sections and slices
-- Whole-array assignment
 - Assigning a matrix row or column to a vector
 - `IxRange` expressions for assign, e.g. `a(1:5)`
 - Implied-`do` array constructors
