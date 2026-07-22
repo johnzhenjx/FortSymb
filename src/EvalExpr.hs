@@ -1,4 +1,12 @@
-module EvalExpr where
+module EvalExpr
+    ( getVarType
+    , evalExpr
+    , evalValue
+    , evalBinary
+    , evalUnary
+    , promoteNumeric
+    , coerceOnAssignment
+    ) where
 
 import qualified Data.Map as Map
 
@@ -13,7 +21,8 @@ import Prelude hiding (EQ, LT, GT)
 
 import Types
 import Arrays
-
+import Functions
+import Executor
 
 getVarType :: TypeSpec a -> VarType
 getVarType typeSpec =
@@ -25,12 +34,12 @@ getVarType typeSpec =
 
 
 --evaluates AST expressions to What4 symbolic expressions
-evalExpr :: IsExprBuilder sym
+evalExpr :: IsSymExprBuilder sym
     => sym
     -> ObligationFlags
     -> Expression a
-    -> SymState sym
-    -> IO (SomeExpr sym, SymState sym)
+    -> SymState sym a
+    -> IO (SomeExpr sym, SymState sym a)
 
 evalExpr sym flags expr state = 
     case expr of
@@ -47,19 +56,50 @@ evalExpr sym flags expr state =
             pure (result, state2)
 
         ExpSubscript _ann _span baseExpr indicesInfo -> evalArraySubscript sym flags baseExpr (alistList indicesInfo) state
-        ExpFunctionCall {} ->
-            error "Unsupported expression: function call"
+        -- ExpFunctionCall {} ->
+        --     error "Unsupported expression: function call"
+        ExpFunctionCall _ann _span functionExpr argumentsInfo ->
+            evalFunctionCall sym flags functionExpr (alistList argumentsInfo) state
         _ ->
             error "Unsupported expression in Fortran subset"
 
 
-evalArraySubscript :: IsExprBuilder sym 
+evalFunctionCall :: IsSymExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> Expression a
+    -> [Argument a]
+    -> SymState sym a
+    -> IO (SomeExpr sym, SymState sym a)
+evalFunctionCall sym flags functionExpr arguments callerState = do
+    functionName <-
+        case functionExpr of
+            ExpValue _ann _span (ValVariable name) -> pure name
+            _ -> error "Unsupported function designator"
+
+    functionDef <-
+            case Map.lookup functionName (procedureEnv callerState) of
+                Just def -> pure def
+                Nothing -> error $ "Unknown function: " ++ functionName
+
+    let matchedArguments = matchFunctionArguments (functionParameters functionDef) arguments --POSITIONAL ONLY, IGNORED NAMED FOR NOW
+    (evaluatedArguments, callerState1) <- evalMatchedArguments sym flags matchedArguments callerState
+    execFunctionDefinition sym flags functionName functionDef evaluatedArguments callerState1
+
+
+
+
+
+
+
+
+evalArraySubscript :: IsSymExprBuilder sym 
     => sym 
     -> ObligationFlags 
     -> Expression a 
     -> [Index a] 
-    -> SymState sym 
-    -> IO (SomeExpr sym, SymState sym)
+    -> SymState sym a 
+    -> IO (SomeExpr sym, SymState sym a)
 
 evalArraySubscript sym flags baseExpr indicesExprs state = do
     arrayExpr <-
@@ -78,11 +118,11 @@ evalArraySubscript sym flags baseExpr indicesExprs state = do
     lookupSomeArray sym flags arrayExpr indices state1
 
 
-evalValue :: IsExprBuilder sym
+evalValue :: IsSymExprBuilder sym
     => sym
     -> Value a
-    -> SymState sym
-    -> IO (SomeExpr sym, SymState sym)
+    -> SymState sym a
+    -> IO (SomeExpr sym, SymState sym a)
 
 evalValue sym val state = 
     case val of
@@ -125,14 +165,14 @@ realAstLitToRational rLit =
                     in numerator % denominator
 
                     
-evalBinary :: IsExprBuilder sym
+evalBinary :: IsSymExprBuilder sym
     => sym
     -> ObligationFlags
     -> BinaryOp
     -> SomeExpr sym
     -> SomeExpr sym
-    -> SymState sym
-    -> IO (SomeExpr sym, SymState sym)
+    -> SymState sym a
+    -> IO (SomeExpr sym, SymState sym a)
 
 evalBinary sym flags op v1 v2 state =
     case op of
@@ -316,7 +356,7 @@ evalUnary sym flags op v state =
 
 
 -- enforce numeric type lifting on binary operations between ints and reals
-promoteNumeric :: IsExprBuilder sym
+promoteNumeric :: IsSymExprBuilder sym
     => sym
     -> SomeExpr sym
     -> SomeExpr sym
@@ -336,7 +376,7 @@ promoteNumeric sym v1 v2 =
         _ -> error "Non-numeric terms in arithmetic operation"
         
       
-coerceOnAssignment :: IsExprBuilder sym
+coerceOnAssignment :: IsSymExprBuilder sym
     => sym
     -> VarType
     -> SomeExpr sym

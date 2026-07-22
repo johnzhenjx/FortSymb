@@ -10,6 +10,8 @@ import qualified Data.Parameterized.Context as Ctx
 import What4.Interface
 import What4.BaseTypes
 
+import Language.Fortran.AST
+
 
 type VarName = String
 
@@ -51,6 +53,20 @@ data VarBinding sym = VarBinding
     }
 
 
+data ProcedureDef a
+    = FunctionDef
+        { functionParameters :: [VarName],
+          functionResult     :: VarName,
+          functionBody       :: [Block a]
+        }
+    | SubroutineDef
+        { subroutineParameters :: [VarName],
+          subroutineBody       :: [Block a]
+        }
+
+type ProcedureEnv a = Map String (ProcedureDef a)
+
+
 data ObligationKind = UserAssertions | DivByZero | ArrayBounds | ArrayShape
     deriving (Eq, Ord, Show)
 
@@ -62,23 +78,25 @@ data Obligation sym = Obligation
       obligationPath :: [Pred sym]
     }
 
-data SymState sym = SymState
+data SymState sym a = SymState
     { env :: Map VarName (VarBinding sym),
       pathCond :: [Pred sym],
       obligations :: [Obligation sym],
-      freshCount :: Int
+      freshCount :: Int,
+      procedureEnv :: ProcedureEnv a
     }
 
 isObligationEnabled :: ObligationFlags -> ObligationKind -> Bool
 isObligationEnabled flags kind = Map.findWithDefault False kind flags
 
 
-emptyState :: SymState sym
-emptyState = SymState
+emptyState :: ProcedureEnv a -> SymState sym a
+emptyState procEnv = SymState
     { env = Map.empty,
       pathCond = [],
       obligations = [],
-      freshCount = 0
+      freshCount = 0,
+      procedureEnv = procEnv
     }
 
 
@@ -88,3 +106,4 @@ data ObligationResult
     = ObligationValid
     | ObligationInvalid Counterexample
     deriving (Show)
+

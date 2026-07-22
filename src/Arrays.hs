@@ -25,7 +25,7 @@ arrayElementType arrayExpr =
         SomeBoolArray _ -> VarBool
         _ -> error "arrayElementType expected an array"
 
-dimensionOffset :: IsExprBuilder sym 
+dimensionOffset :: IsSymExprBuilder sym 
     => sym 
     -> ArrayDimension sym 
     -> SymExpr sym BaseIntegerType 
@@ -33,7 +33,7 @@ dimensionOffset :: IsExprBuilder sym
 dimensionOffset sym dimension index = intSub sym index (dimensionLower dimension)
 
 --upper - lower + 1, symbolically
-dimensionExtent :: IsExprBuilder sym 
+dimensionExtent :: IsSymExprBuilder sym 
     => sym 
     -> ArrayDimension sym 
     -> IO (SymExpr sym BaseIntegerType)
@@ -50,7 +50,7 @@ dimensionExtent sym dimension = do
     --clamps at 0, ie in fortran, vec(1:-1) is a zero-sized array
 
 --one dimension, one index
-arrayIndexInBounds :: IsExprBuilder sym 
+arrayIndexInBounds :: IsSymExprBuilder sym 
     => sym 
     -> ArrayDimension sym 
     -> SymExpr sym BaseIntegerType 
@@ -62,7 +62,7 @@ arrayIndexInBounds sym dimension index = do
 
 
 -- andPreds across all dimensions and indices
-arrayIndicesInBounds :: IsExprBuilder sym 
+arrayIndicesInBounds :: IsSymExprBuilder sym 
     => sym 
     -> [ArrayDimension sym] 
     -> [SymExpr sym BaseIntegerType] 
@@ -78,7 +78,7 @@ arrayIndicesInBounds sym dimensions indices =
                 
 
 --symbolic flat=(i1​−L1​)+N1​((i2​−L2​)+N2​((i3​−L3​)+⋯)).
-flattenArrayIndices :: IsExprBuilder sym 
+flattenArrayIndices :: IsSymExprBuilder sym 
     => sym 
     -> [ArrayDimension sym] 
     -> [SymExpr sym BaseIntegerType] 
@@ -95,7 +95,7 @@ flattenArrayIndices sym dimensions indices =
 
 
 
-unflattenArrayIndex :: IsExprBuilder sym
+unflattenArrayIndex :: IsSymExprBuilder sym
     => sym
     -> [ArrayDimension sym]
     -> SymExpr sym BaseIntegerType
@@ -115,12 +115,12 @@ unflattenArrayIndex sym dimensions flatIndex =
 
 
 evalArrayDimensions ::
-    IsExprBuilder sym =>
+    IsSymExprBuilder sym =>
     sym ->
     ObligationFlags ->
     [DimensionDeclarator a] ->
-    SymState sym ->
-    IO ([ArrayDimension sym], SymState sym)
+    SymState sym a ->
+    IO ([ArrayDimension sym], SymState sym a)
 evalArrayDimensions sym flags dimensionDecls state = 
     case dimensionDecls of
         [] -> pure ([], state)
@@ -131,12 +131,12 @@ evalArrayDimensions sym flags dimensionDecls state =
 
 
 --assume all array sizes known for now
-evalArrayDimension :: IsExprBuilder sym 
+evalArrayDimension :: IsSymExprBuilder sym 
     => sym 
     -> ObligationFlags 
     -> DimensionDeclarator a 
-    -> SymState sym 
-    -> IO (ArrayDimension sym, SymState sym)
+    -> SymState sym a 
+    -> IO (ArrayDimension sym, SymState sym a)
 evalArrayDimension sym flags dimensionDecl state = do
     (lowerBound, state1) <-
         case dimDeclLower dimensionDecl of
@@ -161,12 +161,12 @@ evalArrayDimension sym flags dimensionDecl state = do
     pure ( ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound }, state2 )
 
 
-evalArrayIndices :: IsExprBuilder sym
+evalArrayIndices :: IsSymExprBuilder sym
     => sym
     -> ObligationFlags
     -> [Index a]
-    -> SymState sym
-    -> IO ([SymExpr sym BaseIntegerType], SymState sym)
+    -> SymState sym a
+    -> IO ([SymExpr sym BaseIntegerType], SymState sym a)
 evalArrayIndices sym flags indices state = case indices of
     [] -> pure ([], state)
     indexNode : remainingNodes ->
@@ -242,7 +242,7 @@ createUninitialisedArray sym name varTy dimensions = do
                         }
 
 
-createConstantArray :: IsExprBuilder sym 
+createConstantArray :: IsSymExprBuilder sym 
     => sym 
     -> [ArrayDimension sym] 
     -> SomeExpr sym 
@@ -296,8 +296,8 @@ createArrayFromConstructor :: IsSymExprBuilder sym
     -> VarType
     -> [ArrayDimension sym]
     -> [Expression a]
-    -> SymState sym
-    -> IO (SomeExpr sym, SymState sym)
+    -> SymState sym a
+    -> IO (SomeExpr sym, SymState sym a)
 createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
     initialArray <- createUninitialisedArray sym name declaredType dimensions
     stateWithShapeCheck <- addConstructorShapeObligation sym flags dimensions (length elementExprs) state
@@ -338,13 +338,13 @@ createArrayFromConstructor sym flags name declaredType dimensions elementExprs s
 
 
 --using normal index lists
-lookupSomeArray :: IsExprBuilder sym 
+lookupSomeArray :: IsSymExprBuilder sym 
     => sym
     -> ObligationFlags
     -> SomeExpr sym 
     -> [SymExpr sym BaseIntegerType]
-    -> SymState sym
-    -> IO (SomeExpr sym, SymState sym)
+    -> SymState sym a
+    -> IO (SomeExpr sym, SymState sym a)
 lookupSomeArray sym flags arrayExpr indices state =
     case arrayExpr of
         SomeIntArray arrayRecord -> lookupArray sym flags indices SomeInt arrayRecord state
@@ -374,14 +374,14 @@ lookupSomeArray sym flags arrayExpr indices state =
 
 
 
-updateSomeArray :: IsExprBuilder sym 
+updateSomeArray :: IsSymExprBuilder sym 
     => sym
     -> ObligationFlags
     -> SomeExpr sym 
     -> [SymExpr sym BaseIntegerType] 
     -> SomeExpr sym 
-    -> SymState sym
-    -> IO (SomeExpr sym, SymState sym)
+    -> SymState sym a
+    -> IO (SomeExpr sym, SymState sym a)
 updateSomeArray sym flags arrayExpr indices newValue state =
     case (arrayExpr, newValue) of
         (SomeIntArray arrayRecord, SomeInt value) -> updateArray sym flags indices SomeIntArray arrayRecord value state

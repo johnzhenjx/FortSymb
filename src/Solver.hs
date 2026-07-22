@@ -68,7 +68,7 @@ withSolverResult sym predicate handleResult =
 -- checks whether one symbolic state has satisfiable path condition list.
 checkStateFeasibility ::
     ExprBuilder t st fs ->
-    SymState (ExprBuilder t st fs) ->
+    SymState (ExprBuilder t st fs) a ->
     IO Bool
 checkStateFeasibility sym state = do
     pathPred <- predicateOfCondList sym (pathCond state)
@@ -84,8 +84,8 @@ checkStateFeasibility sym state = do
 -- currently has logger attached - bad!
 keepFeasibleStates ::
     ExprBuilder t st fs ->
-    [SymState (ExprBuilder t st fs)] ->
-    IO [SymState (ExprBuilder t st fs)]
+    [SymState (ExprBuilder t st fs) a] ->
+    IO [SymState (ExprBuilder t st fs) a]
 keepFeasibleStates sym states = do
     feasibleNumberedStates <-
         filterM isFeasible (zip [(1 :: Int) ..] states)
@@ -106,7 +106,7 @@ keepFeasibleStates sym states = do
 
 evaluateAllStateObligations ::
     ExprBuilder t st fs ->
-    [SymState (ExprBuilder t st fs)] ->
+    [SymState (ExprBuilder t st fs) a] ->
     IO
         [ [ ( Obligation (ExprBuilder t st fs)
             , ObligationResult
@@ -124,7 +124,7 @@ evaluateAllStateObligations sym states =
 
 evaluateStateObligations ::
     ExprBuilder t st fs ->
-    SymState (ExprBuilder t st fs) ->
+    SymState (ExprBuilder t st fs) a ->
     IO
         [ ( Obligation (ExprBuilder t st fs)
           , ObligationResult
@@ -137,7 +137,7 @@ evaluateStateObligations sym state = do
     where
         evaluateStateObligationsRecurse ::
             ExprBuilder t st fs ->
-            SymState (ExprBuilder t st fs) ->
+            SymState (ExprBuilder t st fs) a ->
             Pred (ExprBuilder t st fs) ->
             [Obligation (ExprBuilder t st fs)] ->
             IO
@@ -163,7 +163,7 @@ evaluateStateObligations sym state = do
 
 evaluateOneObligation ::
     ExprBuilder t st fs ->
-    SymState (ExprBuilder t st fs) ->
+    SymState (ExprBuilder t st fs) a ->
     Pred (ExprBuilder t st fs) ->
     Obligation (ExprBuilder t st fs) ->
     IO ObligationResult
@@ -184,7 +184,7 @@ evaluateOneObligation sym state previousObligationsPred obligation = do
 
 extractCounterexample ::
     GroundEvalFn t ->
-    SymState (ExprBuilder t st fs) ->
+    SymState (ExprBuilder t st fs) a ->
     IO Counterexample
 extractCounterexample ge state = extractVariableValues ge (Map.toList (env state))
     where

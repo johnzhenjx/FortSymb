@@ -92,7 +92,7 @@ showArrayDimensions dimensions =
 
 printStates ::
     IsExpr (SymExpr sym) =>
-    [SymState sym] ->
+    [SymState sym a] ->
     IO ()
 printStates states = do
     putStrLn ("Number of states: " ++ show (length states))
@@ -109,7 +109,7 @@ printStates states = do
 
 printState ::
     IsExpr (SymExpr sym) =>
-    SymState sym ->
+    SymState sym a ->
     IO ()
 printState state = do
     printEnvironment state
@@ -127,7 +127,7 @@ printState state = do
 
 printEnvironment ::
     IsExpr (SymExpr sym) =>
-    SymState sym ->
+    SymState sym a ->
     IO ()
 printEnvironment state = do
     putStrLn "Environment:"

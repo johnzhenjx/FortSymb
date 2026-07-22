@@ -1,16 +1,16 @@
 program test1
     implicit none
-    real :: r
-    read *, r
-    print *, sphere_surface_area(r)
-
+    real :: w,h
+    real :: A
+    read *, w,h
+    A = rectangle_area(w,h)
+    !@assert A > 0
 contains
-    function sphere_surface_area(r) result(A)
+    function rectangle_area(w,h) result(A)
         implicit none
-        real, intent(in) :: r
-        real, parameter  :: pi = 3.1416
+        real, intent(in) :: w,h
         real             :: A
-        A = 4 * pi * r**2
+        A = w * h
     end function
 end program test1
 

@@ -28,6 +28,8 @@ library
     Arrays
     Attributes
     EvalExpr
+    Executor
+    Functions
     Printer
     Solver
     Types

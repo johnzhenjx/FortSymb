@@ -1,19 +1,21 @@
 module EvalExpr where
 
-import Language.Fortran.AST (Expression)
-import What4.Interface (IsExprBuilder)
+import Language.Fortran.AST (Expression, TypeSpec)
+import What4.Interface (IsSymExprBuilder)
 
 import Types
 
+getVarType :: TypeSpec a -> VarType
+
 evalExpr ::
-    IsExprBuilder sym =>
+    IsSymExprBuilder sym =>
     sym ->
     ObligationFlags ->
     Expression a ->
-    SymState sym ->
-    IO (SomeExpr sym, SymState sym)
+    SymState sym a ->
+    IO (SomeExpr sym, SymState sym a)
 
-coerceOnAssignment :: IsExprBuilder sym
+coerceOnAssignment :: IsSymExprBuilder sym
     => sym
     -> VarType
     -> SomeExpr sym
