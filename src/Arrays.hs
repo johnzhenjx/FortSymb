@@ -392,7 +392,7 @@ createArrayFromConstructor sym flags name declaredType dimensions elementExprs s
                 shapeMatches <- isEq sym arraySize suppliedSize
                 
                 let obligation = Obligation
-                        { obligationKind = ArrayBounds
+                        { obligationKind = ArrayShape
                         , obligationPredicate = shapeMatches
                         , obligationPath = pathCond state
                         }

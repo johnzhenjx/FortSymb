@@ -36,7 +36,7 @@ import Prettyprinter
 import Prelude hiding (EQ, LT, GT)
 
 import Types
-import {-# SOURCE #-} EvalExpr (getVarType, evalExpr, coerceOnAssignment, bindBranches)
+import {-# SOURCE #-} EvalExpr (getVarType, evalExpr, coerceOnAssignment, coerceArrayOnAssignment, bindBranches)
 import Printer
 import Solver
 import Arrays
@@ -566,11 +566,18 @@ execWholeArrayAssign sym flags name binding initExpr state = do
             initialResults <- evalExpr sym flags initExpr state
 
             mapM
-                (\(initValue, state1) ->
+                (\(initValue, state1) -> 
                     case initValue of
-                        SomeIntArray _ -> error "Array copy not supported yet due to shape obligations"
-                        SomeRealArray _ -> error "Array copy not supported yet due to shape obligations"
-                        SomeBoolArray _ -> error "Array copy not supported yet due to shape obligations"
+                        --array copy assign
+                        SomeIntArray _ -> do
+                            (arrayValue, state2) <- coerceArrayOnAssignment sym flags arrayExpr initValue state1
+                            pure state2 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state2) }
+                        SomeRealArray _ -> do
+                            (arrayValue, state2) <- coerceArrayOnAssignment sym flags arrayExpr initValue state1
+                            pure state2 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state2) }
+                        SomeBoolArray _ -> do
+                            (arrayValue, state2) <- coerceArrayOnAssignment sym flags arrayExpr initValue state1
+                            pure state2 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state2) }
 
                         _ -> do --constant array assign (every element filled with expr)
                             coercedValue <- coerceOnAssignment sym elementType initValue
@@ -579,42 +586,6 @@ execWholeArrayAssign sym flags name binding initExpr state = do
                 )
                 initialResults
 
-    -- where
-    --     copyWholeArray :: SomeExpr sym -> SomeExpr sym -> SomeExpr sym
-    --     copyWholeArray destination source =
-    --         case (destination, source) of
-    --             (SomeIntArray destinationRec, SomeIntArray sourceRec) ->
-    --                 SomeIntArray
-    --                     destinationRec
-    --                         { arrayContents = arrayContents sourceRec
-    --                         , arrayInitMask = arrayInitMask sourceRec
-    --                         }
-
-    --             (SomeRealArray destinationRec, SomeRealArray sourceRec) ->
-    --                 SomeRealArray
-    --                     destinationRec
-    --                         { arrayContents = arrayContents sourceRec
-    --                         , arrayInitMask = arrayInitMask sourceRec
-    --                         }
-
-    --             (SomeBoolArray destinationRec, SomeBoolArray sourceRec) ->
-    --                 SomeBoolArray
-    --                     destinationRec
-    --                         { arrayContents = arrayContents sourceRec
-    --                         , arrayInitMask = arrayInitMask sourceRec
-    --                         }
-
-    --             (SomeIntArray _, _) ->
-    --                 error "Expected an integer array"
-
-    --             (SomeRealArray _, _) ->
-    --                 error "Expected a real array"
-
-    --             (SomeBoolArray _, _) ->
-    --                 error "Expected a logical array"
-
-    --             _ ->
-    --                 error "Expected destination array"
 
 
 execRead2s :: IsSymExprBuilder sym
@@ -834,7 +805,7 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
             nestedResults <-
                 mapM
                     (\declaredLocalState -> do
-                        boundLocalState <- bindFunctionParameters sym argumentValues declaredLocalState
+                        boundLocalState <- bindFunctionParameters argumentValues declaredLocalState
                         returnBindingLocalState <- case maybeReturnTypeSpec of
                             Nothing -> pure boundLocalState
                             Just returnTypeSpec -> do
@@ -851,12 +822,7 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
 
 
     where
-        bindFunctionParameters :: IsSymExprBuilder sym 
-            => sym 
-            -> [(VarName, SomeExpr sym)] 
-            -> SymState sym a 
-            -> IO (SymState sym a)
-        bindFunctionParameters sym argumentValues initialState =
+        bindFunctionParameters argumentValues initialState =
             go initialState argumentValues
             where
                 go state argPairs = case argPairs of
@@ -865,11 +831,42 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
                         case Map.lookup parameterName (env state) of
                             Nothing -> error $ "Function parameter is not declared: " ++ parameterName
                             Just binding -> do
-                                coercedValue <- coerceOnAssignment sym (varType binding) argumentValue
-                                let updatedBinding = binding { varValue = Just coercedValue }
-                                    state1 = state { env = Map.insert parameterName updatedBinding (env state) }
-                                go state1 rest
+                                (boundValue, state1) <- bindParameterValue binding argumentValue state
+                                let updatedBinding = binding { varValue = Just boundValue }
+                                    state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
+                                go state2 rest
                                 
+        bindParameterValue binding argumentValue state =
+            case (varType binding, argumentValue) of
+                -- Array parameter with array argument
+                (VarArray _ _, SomeIntArray{}) ->
+                    case varValue binding of
+                        Nothing -> error "Array parameter has no declared array value"
+                        Just targetArray -> coerceArrayOnAssignment sym flags targetArray argumentValue state
+
+                (VarArray _ _, SomeRealArray{}) ->
+                    case varValue binding of
+                        Nothing -> error "Array parameter has no declared array value"
+                        Just targetArray -> coerceArrayOnAssignment sym flags targetArray argumentValue state
+
+                (VarArray _ _, SomeBoolArray{}) ->
+                    case varValue binding of
+                        Nothing -> error "Array parameter has no declared array value"
+                        Just targetArray -> coerceArrayOnAssignment sym flags targetArray argumentValue state
+
+                -- Array parameter with scalar argument
+                (VarArray _ _, _) -> error "Scalar argument passed to array parameter"
+
+                -- Scalar parameter with array argument
+                (_, SomeIntArray{}) -> error "Array argument passed to scalar parameter"
+                (_, SomeRealArray{}) -> error "Array argument passed to scalar parameter"
+                (_, SomeBoolArray{}) -> error "Array argument passed to scalar parameter"
+
+                -- Scalar parameter with scalar argument
+                _ -> do
+                    coercedValue <- coerceOnAssignment sym (varType binding) argumentValue
+                    pure (coercedValue, state)
+
 
         returnFunctionResult :: VarName -> SymState sym a -> SymState sym a -> IO (SomeExpr sym, SymState sym a)
         returnFunctionResult resultName callerState localState =

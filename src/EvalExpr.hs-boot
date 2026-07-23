@@ -11,7 +11,7 @@ bindBranches ::
     IO [(x, SymState sym a)] ->
     (x -> SymState sym a -> IO [(y, SymState sym a)]) ->
     IO [(y, SymState sym a)]
-    
+
 evalExpr ::
     IsSymExprBuilder sym =>
     sym ->
@@ -25,3 +25,11 @@ coerceOnAssignment :: IsSymExprBuilder sym
     -> VarType
     -> SomeExpr sym
     -> IO (SomeExpr sym)
+
+coerceArrayOnAssignment :: IsSymExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> SomeExpr sym
+    -> SomeExpr sym
+    -> SymState sym a
+    -> IO (SomeExpr sym, SymState sym a)

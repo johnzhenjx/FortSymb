@@ -452,3 +452,51 @@ coerceOnAssignment sym targetType rhs =
             pure rhs
         _ -> error "Bad assignment"
 
+coerceArrayOnAssignment :: IsSymExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> SomeExpr sym
+    -> SomeExpr sym
+    -> SymState sym a
+    -> IO (SomeExpr sym, SymState sym a)
+coerceArrayOnAssignment sym flags targetArray sourceValue state =
+    case (targetArray, sourceValue) of
+        (SomeIntArray targetRecord, SomeIntArray sourceRecord) ->
+            copyArray (SomeIntArray sourceRecord) (arrayDimensions targetRecord) (arrayDimensions sourceRecord)
+        (SomeRealArray targetRecord, SomeRealArray sourceRecord) ->
+            copyArray (SomeRealArray sourceRecord) (arrayDimensions targetRecord) (arrayDimensions sourceRecord)
+        (SomeBoolArray targetRecord, SomeBoolArray sourceRecord) ->
+            copyArray (SomeBoolArray sourceRecord) (arrayDimensions targetRecord) (arrayDimensions sourceRecord)
+
+        _ -> error "Whole-array assignment target is not an array"
+
+    where
+        copyArray sourceArray targetDims sourceDims = do
+            shapePredicate <- arrayShapesEqual sym targetDims sourceDims
+            let state1 =
+                    if isObligationEnabled flags ArrayShape then
+                        let obligation = Obligation
+                                { obligationKind = ArrayShape
+                                , obligationPredicate = shapePredicate
+                                , obligationPath = pathCond state
+                                }
+                        in state { obligations = obligation : obligations state }
+                    else state 
+            pure (sourceArray, state1)
+
+        arrayShapesEqual sym targetDims sourceDims =
+            case (targetDims, sourceDims) of
+                ([], []) -> pure (truePred sym)
+
+                (targetDim : remainingTargets, sourceDim : remainingSources) -> do
+
+                    targetExtent <- dimensionExtent sym targetDim
+                    sourceExtent <- dimensionExtent sym sourceDim
+
+                    thisDimensionEqual <- intEq sym targetExtent sourceExtent
+                    remainingEqual <- arrayShapesEqual sym remainingTargets remainingSources
+                    andPred sym thisDimensionEqual remainingEqual
+
+                _ -> pure (falsePred sym)
+
+            
