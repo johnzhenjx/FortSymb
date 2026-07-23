@@ -1,12 +1,4 @@
-module EvalExpr
-    ( getVarType
-    , evalExpr
-    , evalValue
-    , evalBinary
-    , evalUnary
-    , promoteNumeric
-    , coerceOnAssignment
-    ) where
+module EvalExpr where
 
 import qualified Data.Map as Map
 
@@ -33,27 +25,65 @@ getVarType typeSpec =
         _ -> error "Unsupported declaration type"
 
 
+-- bindEval ::
+--     IO [(SomeExpr sym, SymState sym a)] ->
+--     (SomeExpr sym -> SymState sym a -> IO [(SomeExpr sym, SymState sym a)]) ->
+--     IO [(SomeExpr sym, SymState sym a)]
+-- --takes list of eval result tuples, and a continuation function, and performs the function on every tuple in the list, then flattens it?
+-- bindEval evaluation continuation = do
+--     results <- evaluation
+
+--     nestedResults <-
+--         mapM
+--             (\(value, state) ->
+--                 continuation value state)
+--             results
+
+--     pure (concat nestedResults)
+
+
+bindBranches ::
+    IO [(x, SymState sym a)] ->
+    (x -> SymState sym a -> IO [(y, SymState sym a)]) ->
+    IO [(y, SymState sym a)]
+bindBranches computation continuation = do
+    results <- computation
+
+    nestedResults <-
+        mapM
+            (\(value, state) ->
+                continuation value state)
+            results
+
+    pure (concat nestedResults)
+
+
 --evaluates AST expressions to What4 symbolic expressions
 evalExpr :: IsSymExprBuilder sym
     => sym
     -> ObligationFlags
     -> Expression a
     -> SymState sym a
-    -> IO (SomeExpr sym, SymState sym a)
+    -> IO [(SomeExpr sym, SymState sym a)]
 
 evalExpr sym flags expr state = 
     case expr of
         ExpValue _ann _span val ->
             evalValue sym val state
-        ExpBinary _ann _span op e1 e2 -> do --assumes left to right evaluation
-            (v1, state1) <- evalExpr sym flags e1 state
-            (v2, state2) <- evalExpr sym flags e2 state1
-            (result, state3) <- evalBinary sym flags op v1 v2 state2
-            pure (result, state3)
-        ExpUnary _ann _span op e -> do
-            (v, state1) <- evalExpr sym flags e state
-            (result, state2) <- evalUnary sym flags op v state1
-            pure (result, state2)
+        ExpBinary _ann _span op e1 e2 ->  --assumes left to right evaluation
+            bindBranches
+                (evalExpr sym flags e1 state)
+                (\v1 state1 ->
+                    bindBranches
+                        (evalExpr sym flags e2 state1)
+                        (\v2 state2 -> evalBinary sym flags op v1 v2 state2)
+                )
+
+        ExpUnary _ann _span op e -> 
+            bindBranches
+                (evalExpr sym flags e state)
+                (\value state1 -> evalUnary sym flags op value state1
+                )
 
         ExpSubscript _ann _span baseExpr indicesInfo -> evalArraySubscript sym flags baseExpr (alistList indicesInfo) state
         -- ExpFunctionCall {} ->
@@ -70,7 +100,7 @@ evalFunctionCall :: IsSymExprBuilder sym
     -> Expression a
     -> [Argument a]
     -> SymState sym a
-    -> IO (SomeExpr sym, SymState sym a)
+    -> IO [(SomeExpr sym, SymState sym a)]
 evalFunctionCall sym flags functionExpr arguments callerState = do
     functionName <-
         case functionExpr of
@@ -83,8 +113,17 @@ evalFunctionCall sym flags functionExpr arguments callerState = do
                 Nothing -> error $ "Unknown function: " ++ functionName
 
     let matchedArguments = matchFunctionArguments (functionParameters functionDef) arguments --POSITIONAL ONLY, IGNORED NAMED FOR NOW
-    (evaluatedArguments, callerState1) <- evalMatchedArguments sym flags matchedArguments callerState
-    execFunctionDefinition sym flags functionName functionDef evaluatedArguments callerState1
+    bindBranches
+        (evalMatchedArguments sym flags matchedArguments callerState)
+        (\evaluatedArguments callerState1 ->
+            execFunctionDefinition
+                sym
+                flags
+                functionName
+                functionDef
+                evaluatedArguments
+                callerState1
+        )
 
 
 
@@ -99,7 +138,7 @@ evalArraySubscript :: IsSymExprBuilder sym
     -> Expression a 
     -> [Index a] 
     -> SymState sym a 
-    -> IO (SomeExpr sym, SymState sym a)
+    -> IO [(SomeExpr sym, SymState sym a)]
 
 evalArraySubscript sym flags baseExpr indicesExprs state = do
     arrayExpr <-
@@ -114,15 +153,20 @@ evalArraySubscript sym flags baseExpr indicesExprs state = do
             _ ->
                 error "Unsupported array base expression"
 
-    (indices, state1) <- evalArrayIndices sym flags indicesExprs state
-    lookupSomeArray sym flags arrayExpr indices state1
+    indexResults <- evalArrayIndices sym flags indicesExprs state
+    mapM
+        (\(indices, state1) ->
+            lookupSomeArray sym flags arrayExpr indices state1
+        )
+        indexResults
+
 
 
 evalValue :: IsSymExprBuilder sym
     => sym
     -> Value a
     -> SymState sym a
-    -> IO (SomeExpr sym, SymState sym a)
+    -> IO [(SomeExpr sym, SymState sym a)]
 
 evalValue sym val state = 
     case val of
@@ -130,16 +174,16 @@ evalValue sym val state =
             case Map.lookup name (env state) of
                 Nothing -> error ("Variable not declared: " ++ name)
                 Just (VarBinding _ Nothing) -> error ("Variable used before initialisation: " ++ name)
-                Just (VarBinding _ (Just e)) -> pure (e, state)
+                Just (VarBinding _ (Just e)) -> pure [(e, state)]
         ValInteger nStr _kind -> do
             e <- intLit sym (read nStr :: Integer)
-            pure (SomeInt e, state)
+            pure [(SomeInt e, state)]
         ValReal rLit _kind -> do
             e <- realLit sym (realAstLitToRational rLit)
-            pure (SomeReal e, state)
+            pure [(SomeReal e, state)]
         ValLogical b _kind ->
-            if b then pure (SomeBool (truePred sym), state)
-                else pure (SomeBool (falsePred sym), state)
+            if b then pure [(SomeBool (truePred sym), state)]
+                else pure [(SomeBool (falsePred sym), state)]
         _ ->
             error "Unsupported expression in Fortran subset"
 
@@ -172,7 +216,7 @@ evalBinary :: IsSymExprBuilder sym
     -> SomeExpr sym
     -> SomeExpr sym
     -> SymState sym a
-    -> IO (SomeExpr sym, SymState sym a)
+    -> IO [(SomeExpr sym, SymState sym a)]
 
 evalBinary sym flags op v1 v2 state =
     case op of
@@ -181,30 +225,30 @@ evalBinary sym flags op v1 v2 state =
             case (v1p, v2p) of
                 (SomeInt x, SomeInt y) -> do
                     z <- intAdd sym x y
-                    pure (SomeInt z, state)
+                    pure [(SomeInt z, state)]
                 (SomeReal x, SomeReal y) -> do
                     z <- realAdd sym x y
-                    pure (SomeReal z, state)
+                    pure [(SomeReal z, state)]
 
         Subtraction -> do
             (v1p, v2p) <- promoteNumeric sym v1 v2
             case (v1p, v2p) of
                 (SomeInt x, SomeInt y) -> do
                     z <- intSub sym x y
-                    pure (SomeInt z, state)
+                    pure [(SomeInt z, state)]
                 (SomeReal x, SomeReal y) -> do
                     z <- realSub sym x y
-                    pure (SomeReal z, state)
+                    pure [(SomeReal z, state)]
 
         Multiplication -> do
             (v1p, v2p) <- promoteNumeric sym v1 v2
             case (v1p, v2p) of
                 (SomeInt x, SomeInt y) -> do
                     z <- intMul sym x y
-                    pure (SomeInt z, state)
+                    pure [(SomeInt z, state)]
                 (SomeReal x, SomeReal y) -> do
                     z <- realMul sym x y
-                    pure (SomeReal z, state)
+                    pure [(SomeReal z, state)]
 
         Division -> do
             (v1p, v2p) <- promoteNumeric sym v1 v2
@@ -222,7 +266,7 @@ evalBinary sym flags op v1 v2 state =
                             pure state { obligations = obligation : obligations state }
                         else pure state
                     z <- intDiv sym x y
-                    pure (SomeInt z, newState)
+                    pure [(SomeInt z, newState)]
 
                 (SomeReal x, SomeReal y) -> do
                     newState <-
@@ -237,13 +281,13 @@ evalBinary sym flags op v1 v2 state =
                             pure state { obligations = obligation : obligations state }
                         else pure state
                     z <- realDiv sym x y
-                    pure (SomeReal z, newState)
+                    pure [(SomeReal z, newState)]
 
         EQ ->
             case (v1, v2) of
                 (SomeBool p, SomeBool q) -> do
                     r <- eqPred sym p q
-                    pure (SomeBool r, state)
+                    pure [(SomeBool r, state)]
                 (SomeInt _,  SomeInt _)  -> numericEq
                 (SomeInt _,  SomeReal _) -> numericEq
                 (SomeReal _, SomeInt _)  -> numericEq
@@ -255,13 +299,13 @@ evalBinary sym flags op v1 v2 state =
                     p <- case (v1p, v2p) of
                         (SomeInt  x, SomeInt  y)   -> intEq sym x y
                         (SomeReal x, SomeReal y)   -> realEq sym x y
-                    pure (SomeBool p, state)
+                    pure [(SomeBool p, state)]
 
         NE ->
             case (v1, v2) of
                 (SomeBool p, SomeBool q) -> do
                     r <- notPred sym =<< eqPred sym p q
-                    pure (SomeBool r, state)
+                    pure [(SomeBool r, state)]
                 (SomeInt _,  SomeInt _)  -> numericNe
                 (SomeInt _,  SomeReal _) -> numericNe
                 (SomeReal _, SomeInt _)  -> numericNe
@@ -273,55 +317,55 @@ evalBinary sym flags op v1 v2 state =
                     p <- case (v1p, v2p) of
                         (SomeInt  x, SomeInt y) -> notPred sym =<< intEq sym x y
                         (SomeReal x, SomeReal y) -> realNe sym x y
-                    pure (SomeBool p, state)
+                    pure [(SomeBool p, state)]
 
         LT -> do
             (v1p, v2p) <- promoteNumeric sym v1 v2
             p <- case (v1p, v2p) of
                 (SomeInt  x, SomeInt  y) -> intLt sym x y
                 (SomeReal x, SomeReal y) -> realLt sym x y
-            pure (SomeBool p, state)
+            pure [(SomeBool p, state)]
 
         LTE -> do
             (v1p, v2p) <- promoteNumeric sym v1 v2
             p <- case (v1p, v2p) of
                 (SomeInt  x, SomeInt  y) -> intLe sym x y
                 (SomeReal x, SomeReal y) -> realLe sym x y
-            pure (SomeBool p, state)
+            pure [(SomeBool p, state)]
 
         GT -> do
             (v1p, v2p) <- promoteNumeric sym v1 v2
             p <- case (v1p, v2p) of
                 (SomeInt  x, SomeInt  y) -> intLt sym y x
                 (SomeReal x, SomeReal y) -> realLt sym y x
-            pure (SomeBool p, state)
+            pure [(SomeBool p, state)]
 
         GTE -> do
             (v1p, v2p) <- promoteNumeric sym v1 v2
             p <- case (v1p, v2p) of
                 (SomeInt  x, SomeInt  y) -> intLe sym y x
                 (SomeReal x, SomeReal y) -> realLe sym y x
-            pure (SomeBool p, state)
+            pure [(SomeBool p, state)]
 
         And ->
             case (v1, v2) of
                 (SomeBool p, SomeBool q) -> do
                     r <- andPred sym p q
-                    pure (SomeBool r, state)
+                    pure [(SomeBool r, state)]
                 _ -> error ".and. requires logical operands"
 
         Or ->
             case (v1, v2) of
                 (SomeBool p, SomeBool q) -> do
                     r <- orPred sym p q
-                    pure (SomeBool r, state)
+                    pure [(SomeBool r, state)]
                 _ -> error ".or. requires logical operands"
 
         XOr -> do
             case (v1, v2) of
                 (SomeBool p, SomeBool q) -> do
                     r <- notPred sym =<< eqPred sym p q
-                    pure (SomeBool r, state)
+                    pure [(SomeBool r, state)]
                 _ -> error ".xor. requires logical operands"
 
 
@@ -331,28 +375,38 @@ evalBinary sym flags op v1 v2 state =
 
             
 
+evalUnary :: IsSymExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> UnaryOp
+    -> SomeExpr sym
+    -> SymState sym a
+    -> IO [(SomeExpr sym, SymState sym a)]
+
 evalUnary sym flags op v state =
     case op of
         Plus ->
             case v of
-                SomeInt _ -> pure (v, state)
-                SomeReal _ -> pure (v, state)
+                SomeInt _ -> pure [(v, state)]
+                SomeReal _ -> pure [(v, state)]
                 _ -> error "Unary + requires numeric operand"
         Minus ->
             case v of
                 SomeInt x -> do
                     r <- intNeg sym x
-                    pure (SomeInt r, state)
+                    pure [(SomeInt r, state)]
                 SomeReal x -> do
                     r <- realNeg sym x
-                    pure (SomeReal r, state)
+                    pure [(SomeReal r, state)]
                 _ -> error "Unary - requires numeric operand"
         Not -> 
             case v of
                 SomeBool p -> do
                     q <- notPred sym p
-                    pure (SomeBool q, state)
+                    pure [(SomeBool q, state)]
                 _ ->  error ".not. requires logical operand"
+
+        _ -> error "Unsupported/invalid unary operator"
 
 
 -- enforce numeric type lifting on binary operations between ints and reals

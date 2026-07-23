@@ -57,7 +57,8 @@ data ProcedureDef a
     = FunctionDef
         { functionParameters :: [VarName],
           functionResult     :: VarName,
-          functionBody       :: [Block a]
+          functionBody       :: [Block a], 
+          functionMaybeReturnTypeSpec :: Maybe (TypeSpec a)
         }
     | SubroutineDef
         { subroutineParameters :: [VarName],

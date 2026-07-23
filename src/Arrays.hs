@@ -1,7 +1,7 @@
 module Arrays where
 
 import Types
-import {-# SOURCE #-} EvalExpr (evalExpr, coerceOnAssignment)
+import {-# SOURCE #-} EvalExpr (evalExpr, coerceOnAssignment, bindBranches)
 
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -114,51 +114,112 @@ unflattenArrayIndex sym dimensions flatIndex =
 
 
 
-evalArrayDimensions ::
-    IsSymExprBuilder sym =>
-    sym ->
-    ObligationFlags ->
-    [DimensionDeclarator a] ->
-    SymState sym a ->
-    IO ([ArrayDimension sym], SymState sym a)
-evalArrayDimensions sym flags dimensionDecls state = 
+-- evalArrayDimensions ::
+--     IsSymExprBuilder sym =>
+--     sym ->
+--     ObligationFlags ->
+--     [DimensionDeclarator a] ->
+--     SymState sym a ->
+--     IO [([ArrayDimension sym], SymState sym a)]
+-- evalArrayDimensions sym flags dimensionDecls state = 
+--     case dimensionDecls of
+--         [] -> pure [([], state)]
+--         decl : decls -> do
+--             (dimension, state1) <- evalArrayDimension sym flags decl state
+--             (dimensions, state2) <- evalArrayDimensions sym flags decls state1
+--             pure (dimension : dimensions, state2)
+
+
+-- --assume all array sizes known for now
+-- evalArrayDimension :: IsSymExprBuilder sym 
+--     => sym 
+--     -> ObligationFlags 
+--     -> DimensionDeclarator a 
+--     -> SymState sym a 
+--     -> IO (ArrayDimension sym, SymState sym a)
+-- evalArrayDimension sym flags dimensionDecl state = do
+--     (lowerBound, state1) <-
+--         case dimDeclLower dimensionDecl of
+--             Nothing -> do
+--                 defaultLower <- intLit sym 1
+--                 pure (defaultLower, state)
+--             Just lowerExpr -> do
+--                 (boundValue, state1) <- evalExpr sym flags lowerExpr state
+--                 case boundValue of
+--                     SomeInt integerExpr -> pure (integerExpr, state1)
+--                     _ -> error "Array lower bound must be an integer expression"
+
+--     (upperBound, state2) <-
+--         case dimDeclUpper dimensionDecl of
+--             Nothing -> error "Array dimension has no upper bound"
+--             Just upperExpr -> do
+--                 (boundValue, state2) <- evalExpr sym flags upperExpr state1
+--                 case boundValue of
+--                     SomeInt integerExpr -> pure (integerExpr, state2)
+--                     _ -> error "Array upper bound must be an integer expression"
+
+--     pure ( ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound }, state2 )
+
+
+
+evalArrayDimensions :: IsSymExprBuilder sym 
+    => sym 
+    -> ObligationFlags
+    -> [DimensionDeclarator a]
+    -> SymState sym a 
+    -> IO [([ArrayDimension sym], SymState sym a)]
+evalArrayDimensions sym flags dimensionDecls state =
     case dimensionDecls of
-        [] -> pure ([], state)
-        decl : decls -> do
-            (dimension, state1) <- evalArrayDimension sym flags decl state
-            (dimensions, state2) <- evalArrayDimensions sym flags decls state1
-            pure (dimension : dimensions, state2)
+        [] -> pure [([], state)]
+        decl : decls ->
+            bindBranches
+                (evalArrayDimension sym flags decl state)
+                (\dimension state1 ->
+                    bindBranches
+                        (evalArrayDimensions sym flags decls state1)
+                        (\dimensions state2 ->
+                            pure [ (dimension : dimensions, state2) ]
+                        )
+                )
 
-
---assume all array sizes known for now
 evalArrayDimension :: IsSymExprBuilder sym 
     => sym 
     -> ObligationFlags 
     -> DimensionDeclarator a 
     -> SymState sym a 
-    -> IO (ArrayDimension sym, SymState sym a)
-evalArrayDimension sym flags dimensionDecl state = do
-    (lowerBound, state1) <-
-        case dimDeclLower dimensionDecl of
-            Nothing -> do
-                defaultLower <- intLit sym 1
-                pure (defaultLower, state)
-            Just lowerExpr -> do
-                (boundValue, state1) <- evalExpr sym flags lowerExpr state
-                case boundValue of
-                    SomeInt integerExpr -> pure (integerExpr, state1)
-                    _ -> error "Array lower bound must be an integer expression"
+    -> IO [(ArrayDimension sym, SymState sym a)]
 
-    (upperBound, state2) <-
-        case dimDeclUpper dimensionDecl of
-            Nothing -> error "Array dimension has no upper bound"
-            Just upperExpr -> do
-                (boundValue, state2) <- evalExpr sym flags upperExpr state1
-                case boundValue of
-                    SomeInt integerExpr -> pure (integerExpr, state2)
-                    _ -> error "Array upper bound must be an integer expression"
+evalArrayDimension sym flags dimensionDecl state =
+    case dimDeclUpper dimensionDecl of
+        Nothing -> error "Array dimension has no upper bound"
 
-    pure ( ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound }, state2 )
+        Just upperExpr ->
+            bindBranches
+                (case dimDeclLower dimensionDecl of
+                    Nothing -> do --default lower bound of 1
+                        lowerBound <- intLit sym 1
+                        pure [(lowerBound, state)]
+
+                    Just lowerExpr ->
+                        bindBranches
+                            (evalExpr sym flags lowerExpr state)
+                            (\value state1 ->
+                                case value of
+                                    SomeInt lowerBound -> pure [(lowerBound, state1)]
+                                    _ -> error "Array lower bound must be an integer expression"
+                        )
+                )
+                (\lowerBound state1 ->
+                    bindBranches
+                        (evalExpr sym flags upperExpr state1)
+                        (\value state2 ->
+                            case value of
+                                SomeInt upperBound ->
+                                    pure [ ( ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound}, state2 ) ]
+                                _ -> error "Array upper bound must be an integer expression"
+                        )
+                )
+
 
 
 evalArrayIndices :: IsSymExprBuilder sym
@@ -166,27 +227,27 @@ evalArrayIndices :: IsSymExprBuilder sym
     -> ObligationFlags
     -> [Index a]
     -> SymState sym a
-    -> IO ([SymExpr sym BaseIntegerType], SymState sym a)
-evalArrayIndices sym flags indices state = case indices of
-    [] -> pure ([], state)
-    indexNode : remainingNodes ->
-        case indexNode of
-            -- third param Maybe String is for functions/subprocs (?), must be Nothing here
-            IxSingle _ann _span Nothing indexExpr -> do
-                (indexValue, state1) <- evalExpr sym flags indexExpr state
+    -> IO [([SymExpr sym BaseIntegerType], SymState sym a)]
 
-                integerIndex <-
-                    case indexValue of
+evalArrayIndices sym flags indices state =
+    case indices of
+        [] -> pure [([], state)]
+
+        (IxSingle _ann _span Nothing indexExpr) : remainingNodes ->
+            bindBranches
+                (evalExpr sym flags indexExpr state)
+                (\indexValue state1 -> do
+                    integerIndex <- case indexValue of
                         SomeInt value -> pure value
                         _ -> error "Array index is not an integer"
 
-                (remainingIndices, finalState) <- evalArrayIndices sym flags remainingNodes state1
-                pure ( integerIndex : remainingIndices, finalState )
-
-            --IxRange goes here, to be implemented
-            _ ->
-                error "Unsupported array section or index"
-
+                    bindBranches
+                        (evalArrayIndices sym flags remainingNodes state1)
+                        (\remainingIndices finalState ->
+                            pure [ ( integerIndex : remainingIndices, finalState) ])
+                    )
+        _ ->
+                    error "Unsupported array section or index"
 
 
 createUninitialisedArray :: IsSymExprBuilder sym 
@@ -297,7 +358,8 @@ createArrayFromConstructor :: IsSymExprBuilder sym
     -> [ArrayDimension sym]
     -> [Expression a]
     -> SymState sym a
-    -> IO (SomeExpr sym, SymState sym a)
+    -> IO [(SomeExpr sym, SymState sym a)]
+
 createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
     initialArray <- createUninitialisedArray sym name declaredType dimensions
     stateWithShapeCheck <- addConstructorShapeObligation sym flags dimensions (length elementExprs) state
@@ -307,15 +369,17 @@ createArrayFromConstructor sym flags name declaredType dimensions elementExprs s
     where
         writeConstructorElements arrayExpr flatPosition elementExprs state = 
             case elementExprs of
-                [] -> pure (arrayExpr, state)
-                (elementExpr : remainingExprs) -> do
-                    (elementValue, state1) <- evalExpr sym flags elementExpr state
-                    coercedValue <- coerceOnAssignment sym declaredType elementValue
-
-                    flatIndex <- intLit sym flatPosition
-                    indices <- unflattenArrayIndex sym dimensions flatIndex
-                    (updatedArray, state2) <- updateSomeArray sym flags arrayExpr indices coercedValue state1
-                    writeConstructorElements updatedArray (flatPosition + 1) remainingExprs state2
+                [] -> pure [(arrayExpr, state)]
+                (elementExpr : remainingExprs) -> 
+                    bindBranches
+                        (evalExpr sym flags elementExpr state)
+                        (\elementValue state1 -> do
+                            coercedValue <- coerceOnAssignment sym declaredType elementValue
+                            flatIndex <- intLit sym flatPosition
+                            indices <- unflattenArrayIndex sym dimensions flatIndex
+                            (updatedArray, state2) <- updateSomeArray sym flags arrayExpr indices coercedValue state1
+                            writeConstructorElements updatedArray (flatPosition + 1) remainingExprs state2
+                        )
 
 
         addConstructorShapeObligation sym flags dimensions constructorLength state
@@ -334,6 +398,44 @@ createArrayFromConstructor sym flags name declaredType dimensions elementExprs s
                         }
 
                 pure state { obligations = obligation : obligations state }
+
+
+-- createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
+--     initialArray <- createUninitialisedArray sym name declaredType dimensions
+--     stateWithShapeCheck <- addConstructorShapeObligation sym flags dimensions (length elementExprs) state
+--     -- ^ checks if the length of initialisation array matches the number of elements in declared array
+--     writeConstructorElements initialArray 0 elementExprs stateWithShapeCheck
+
+--     where
+--         writeConstructorElements arrayExpr flatPosition elementExprs state = 
+--             case elementExprs of
+--                 [] -> pure (arrayExpr, state)
+--                 (elementExpr : remainingExprs) -> do
+--                     (elementValue, state1) <- evalExpr sym flags elementExpr state
+--                     coercedValue <- coerceOnAssignment sym declaredType elementValue
+
+--                     flatIndex <- intLit sym flatPosition
+--                     indices <- unflattenArrayIndex sym dimensions flatIndex
+--                     (updatedArray, state2) <- updateSomeArray sym flags arrayExpr indices coercedValue state1
+--                     writeConstructorElements updatedArray (flatPosition + 1) remainingExprs state2
+
+
+--         addConstructorShapeObligation sym flags dimensions constructorLength state
+--             | not (isObligationEnabled flags ArrayShape) = pure state
+--             | otherwise = do
+--                 extents <- mapM (dimensionExtent sym) dimensions
+--                 one <- intLit sym 1
+--                 arraySize <- foldM (intMul sym) one extents
+--                 suppliedSize <- intLit sym (toInteger constructorLength)
+--                 shapeMatches <- isEq sym arraySize suppliedSize
+                
+--                 let obligation = Obligation
+--                         { obligationKind = ArrayBounds
+--                         , obligationPredicate = shapeMatches
+--                         , obligationPath = pathCond state
+--                         }
+
+--                 pure state { obligations = obligation : obligations state }
 
 
 

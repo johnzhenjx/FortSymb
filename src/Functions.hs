@@ -9,7 +9,7 @@ import Data.Maybe (mapMaybe)
 import Data.Map (Map)  
 import qualified Data.Map as Map
 
-import {-# SOURCE #-} EvalExpr (evalExpr, coerceOnAssignment)
+import {-# SOURCE #-} EvalExpr (evalExpr, bindBranches)
 
 extractFunctionDef :: ProgramUnit a -> Maybe (String, ProcedureDef a) 
 extractFunctionDef programUnit =
@@ -18,7 +18,9 @@ extractFunctionDef programUnit =
         PUFunction
             _ann
             _span
-            _returnType --don't think its needed right now
+            maybeReturnType 
+            -- function does not need an explicit return type 
+            -- this is only for the case where the return variable is not declared and rather uses the function name itself
             _prefixSuffix
             name
             maybeArgumentExprs
@@ -33,6 +35,7 @@ extractFunctionDef programUnit =
                         { functionParameters = parameterNames
                         , functionResult = resultName
                         , functionBody = body
+                        , functionMaybeReturnTypeSpec = maybeReturnType
                         }
                     )
 
@@ -85,16 +88,23 @@ evalMatchedArguments :: IsSymExprBuilder sym
     -> ObligationFlags 
     -> [(VarName, Expression a)] 
     -> SymState sym a 
-    -> IO ([(VarName, SomeExpr sym)], SymState sym a)
+    -> IO [([(VarName, SomeExpr sym)], SymState sym a)]
 evalMatchedArguments sym flags matchedArguments initialState =
     go matchedArguments initialState
-    where
-        go args state = case args of
-            [] -> pure ([], state)
-            (parameterName, expression) : remainingArguments -> do
-                (value, state1) <- evalExpr sym flags expression state
-                (remainingValues, state2) <- go remainingArguments state1
-                pure ( (parameterName, value) : remainingValues, state2 )
+  where
+    go args state = case args of
+        [] -> pure [([], state)]
+
+        (parameterName, expression) : remainingArguments ->
+            bindBranches
+                (evalExpr sym flags expression state)
+                (\value state1 ->
+                    bindBranches
+                        (go remainingArguments state1)
+                        (\remainingValues state2 ->
+                            pure [ ( (parameterName, value) : remainingValues, state2 ) ]
+                        )
+                )
 
 
 argumentToExpr :: Argument a -> Expression a
