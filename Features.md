@@ -137,7 +137,6 @@ The following constructor features are not currently supported:
 
 ### Functions
 - FUNCTIONS WORK WITH NAMED + POSITIONAL (no subprograms or recursion for now)
-- currently evalExpr only returns a single state -- for branching within a function, we would need to modify this to returning a list of states (this is a big change)
 - no subprocs yet
 
 
@@ -150,7 +149,6 @@ The following constructor features are not currently supported:
 - Nested or array-valued constructor elements
 - Element-wise array arithmetic
 - Assumed-shape arrays
-- Functions and subroutines
 - General procedure calls
 - Modules
 - Derived types
