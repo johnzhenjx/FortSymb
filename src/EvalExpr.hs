@@ -13,7 +13,7 @@ import Prelude hiding (EQ, LT, GT)
 
 import Types
 import Arrays
-import Functions
+import Procedures
 import Executor
 
 getVarType :: TypeSpec a -> VarType
@@ -94,36 +94,6 @@ evalExpr sym flags expr state =
             error "Unsupported expression in Fortran subset"
 
 
-evalFunctionCall :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
-    -> Expression a
-    -> [Argument a]
-    -> SymState sym a
-    -> IO [(SomeExpr sym, SymState sym a)]
-evalFunctionCall sym flags functionExpr arguments callerState = do
-    functionName <-
-        case functionExpr of
-            ExpValue _ann _span (ValVariable name) -> pure name
-            _ -> error "Unsupported function designator"
-
-    functionDef <-
-            case Map.lookup functionName (procedureEnv callerState) of
-                Just def -> pure def
-                Nothing -> error $ "Unknown function: " ++ functionName
-
-    let matchedArguments = matchFunctionArguments (functionParameters functionDef) arguments --POSITIONAL ONLY, IGNORED NAMED FOR NOW
-    bindBranches
-        (evalMatchedArguments sym flags matchedArguments callerState)
-        (\evaluatedArguments callerState1 ->
-            execFunctionDefinition
-                sym
-                flags
-                functionName
-                functionDef
-                evaluatedArguments
-                callerState1
-        )
 
 
 

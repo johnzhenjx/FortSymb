@@ -2,51 +2,27 @@ module Main (main) where
 
 import qualified Data.ByteString.Char8 as B
 
-import Data.Map (Map)  
 import qualified Data.Map as Map
 
 import Language.Fortran.Parser
 import Language.Fortran.Version
-import Language.Fortran.AST
-import qualified Language.Fortran.AST.Literal.Real as ASTReal
 
 import What4.Interface
-import What4.BaseTypes
 import What4.Expr.Builder
-import What4.Symbol
 import What4.Expr
-         ( ExprBuilder,  FloatModeRepr(..), newExprBuilder
-         , BoolExpr, GroundValue, groundEval
-		 , EmptyExprBuilderState(..), GroundEvalFn, ExprRangeBindings )
 
 import What4.Config (extendConfig)
 import What4.Solver
-         (defaultLogData, z3Options, withZ3, SatResult(..))
-import What4.Protocol.SMTLib2
-         (assume, sessionWriter, runCheckSat)
-
          
 import Data.Parameterized.Nonce (newIONonceGenerator)
 import Data.Parameterized.Some
 
-import Data.Ratio ((%))
-
-import Prettyprinter
-
 import Prelude hiding (EQ, LT, GT)
 
 import Types
-import EvalExpr
 import Printer
 import Solver
-import Arrays
-import Attributes
-import Functions
 import Executor
-
-import qualified Data.List.NonEmpty as NonEmpty
-
-import Control.Monad (forM_, filterM, foldM)
 
 import Data.Char (isSpace)
 import Data.List (dropWhileEnd, stripPrefix)
@@ -83,7 +59,7 @@ preprocessAssertions source =
 
 main :: IO ()
 main = do
-    let filename = "test1.f90"
+    let filename = "test3.f90"
     contents <- B.readFile filename
 
     let transformedSource = B.pack (preprocessAssertions (B.unpack contents))

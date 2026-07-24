@@ -41,7 +41,7 @@ import Printer
 import Solver
 import Arrays
 import Attributes
-import Functions
+import Procedures
 
 import qualified Data.List.NonEmpty as NonEmpty
 
@@ -136,7 +136,8 @@ execStatement sym flags statement state =
             case procedureExpr of
                 ExpValue _ann _span (ValVariable "fortsymb_assert") ->
                     execAssertionArguments sym flags (alistList argumentsInfo) state --assume this will be array of states
-                _ -> error "StCall currently unsupported"
+                _ -> 
+                    evalSubroutineCall sym flags procedureExpr (alistList argumentsInfo) state
 
         --array allocations only for now, hence specifies Nothings
         StAllocate _ann _span Nothing allocationObjectsInfo Nothing -> do
@@ -768,6 +769,39 @@ execIfClauses sym flags condAndBlocks maybeElseBlocks state =
             pure (concat nestedResults)
 
 
+
+evalFunctionCall :: IsSymExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> Expression a
+    -> [Argument a]
+    -> SymState sym a
+    -> IO [(SomeExpr sym, SymState sym a)]
+evalFunctionCall sym flags functionExpr arguments callerState = do
+    functionName <-
+        case functionExpr of
+            ExpValue _ann _span (ValVariable name) -> pure name
+            _ -> error "Unsupported function designator"
+
+    functionDef <-
+            case Map.lookup functionName (procedureEnv callerState) of
+                Just def -> pure def
+                Nothing -> error $ "Unknown function: " ++ functionName
+
+    let matchedArguments = matchProcedureArguments (functionParameters functionDef) arguments
+    bindBranches
+        (evalMatchedFunctionArguments sym flags matchedArguments callerState)
+        (\evaluatedArguments callerState1 ->
+            execFunctionDefinition
+                sym
+                flags
+                functionName
+                functionDef
+                evaluatedArguments
+                callerState1
+        )
+
+
 execFunctionDefinition :: IsSymExprBuilder sym 
     => sym 
     -> ObligationFlags 
@@ -805,7 +839,7 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
             nestedResults <-
                 mapM
                     (\declaredLocalState -> do
-                        boundLocalState <- bindFunctionParameters argumentValues declaredLocalState
+                        boundLocalState <- bindFunctionParameters sym flags argumentValues declaredLocalState
                         returnBindingLocalState <- case maybeReturnTypeSpec of
                             Nothing -> pure boundLocalState
                             Just returnTypeSpec -> do
@@ -818,56 +852,10 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
             pure (concat nestedResults)
 
 
-        SubroutineDef {} -> error $ "Subroutine used as a function: " ++ functionName
+        _ -> error $ "Not a function: " ++ functionName
 
 
     where
-        bindFunctionParameters argumentValues initialState =
-            go initialState argumentValues
-            where
-                go state argPairs = case argPairs of
-                    [] -> pure state
-                    (parameterName, argumentValue) : rest -> do
-                        case Map.lookup parameterName (env state) of
-                            Nothing -> error $ "Function parameter is not declared: " ++ parameterName
-                            Just binding -> do
-                                (boundValue, state1) <- bindParameterValue binding argumentValue state
-                                let updatedBinding = binding { varValue = Just boundValue }
-                                    state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
-                                go state2 rest
-                                
-        bindParameterValue binding argumentValue state =
-            case (varType binding, argumentValue) of
-                -- Array parameter with array argument
-                (VarArray _ _, SomeIntArray{}) ->
-                    case varValue binding of
-                        Nothing -> error "Array parameter has no declared array value"
-                        Just targetArray -> coerceArrayOnAssignment sym flags targetArray argumentValue state
-
-                (VarArray _ _, SomeRealArray{}) ->
-                    case varValue binding of
-                        Nothing -> error "Array parameter has no declared array value"
-                        Just targetArray -> coerceArrayOnAssignment sym flags targetArray argumentValue state
-
-                (VarArray _ _, SomeBoolArray{}) ->
-                    case varValue binding of
-                        Nothing -> error "Array parameter has no declared array value"
-                        Just targetArray -> coerceArrayOnAssignment sym flags targetArray argumentValue state
-
-                -- Array parameter with scalar argument
-                (VarArray _ _, _) -> error "Scalar argument passed to array parameter"
-
-                -- Scalar parameter with array argument
-                (_, SomeIntArray{}) -> error "Array argument passed to scalar parameter"
-                (_, SomeRealArray{}) -> error "Array argument passed to scalar parameter"
-                (_, SomeBoolArray{}) -> error "Array argument passed to scalar parameter"
-
-                -- Scalar parameter with scalar argument
-                _ -> do
-                    coercedValue <- coerceOnAssignment sym (varType binding) argumentValue
-                    pure (coercedValue, state)
-
-
         returnFunctionResult :: VarName -> SymState sym a -> SymState sym a -> IO (SomeExpr sym, SymState sym a)
         returnFunctionResult resultName callerState localState =
             case Map.lookup resultName (env localState) of
@@ -886,3 +874,119 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
                                     , freshCount = freshCount localState
                                     }
                                 )
+
+
+                            
+evalSubroutineCall :: IsSymExprBuilder sym
+    => sym
+    -> ObligationFlags
+    -> Expression a
+    -> [Argument a]
+    -> SymState sym a
+    -> IO [SymState sym a]
+
+evalSubroutineCall sym flags subroutineExpr arguments callerState = do
+    subroutineName <-
+        case subroutineExpr of
+            ExpValue _ann _span (ValVariable name) -> pure name
+            _ -> error "Unsupported subroutine designator"
+
+    subroutineDef <-
+        case Map.lookup subroutineName (procedureEnv callerState) of
+            Just def -> pure def
+            Nothing -> error $ "Unknown subroutine: " ++ subroutineName
+
+    let matchedArguments = matchProcedureArguments (subroutineParameters subroutineDef) arguments
+    evaluatedBranches <- evalMatchedSubroutineArguments sym flags matchedArguments callerState
+
+    nestedStates <-
+        mapM
+            (\(evaluatedArguments, callerState1) ->
+                execSubroutineDefinition
+                    sym
+                    flags
+                    subroutineName
+                    subroutineDef
+                    matchedArguments
+                    evaluatedArguments
+                    callerState1
+            )
+            evaluatedBranches
+
+    pure (concat nestedStates)
+
+
+
+execSubroutineDefinition :: IsSymExprBuilder sym 
+    => sym 
+    -> ObligationFlags 
+    -> String 
+    -> ProcedureDef a 
+    -> [(VarName, Expression a)] 
+    -> [(VarName, Maybe (SomeExpr sym))]
+    -> SymState sym a 
+    -> IO [SymState sym a]
+
+execSubroutineDefinition sym flags subroutineName subroutineDef matchedArguments argumentValues callerState = 
+    case subroutineDef of
+        SubroutineDef { subroutineBody = body } -> do
+            let initialLocalState = callerState { env = Map.empty }
+
+            let (declarationBlocks, executableBlocks) =
+                    span 
+                    (\block -> case block of
+                        BlStatement _ann _span _label StDeclaration{} -> True
+                        BlStatement _ann _span _label StImplicit{} -> True
+                        _ -> False
+                    ) 
+                    body
+
+            declarationStates <- execBlocks sym flags declarationBlocks initialLocalState
+
+            nestedResults <-
+                mapM
+                    (\declaredLocalState -> do
+                        boundLocalState <- bindSubroutineParameters sym flags argumentValues declaredLocalState
+                        finalLocalStates <- execBlocks sym flags executableBlocks boundLocalState
+                        mapM (returnSubroutineState matchedArguments callerState) finalLocalStates
+                    )
+                    declarationStates
+
+            pure (concat nestedResults)
+
+        _ -> error $ "Not a subroutine: " ++ subroutineName
+
+    where
+        returnSubroutineState matchedArguments callerState localState = do
+            updatedCallerEnv <- copyArgumentsBack (env callerState) matchedArguments
+            pure callerState
+                { env = updatedCallerEnv
+                , pathCond = pathCond localState
+                , obligations = obligations localState
+                , freshCount = freshCount localState
+                }
+
+            where
+                copyArgumentsBack callerEnv argumentPairs =
+                    case argumentPairs of
+                        [] -> pure callerEnv
+                        (parameterName, argumentExpr) : rest -> do
+                            argumentName <-
+                                case argumentExpr of
+                                    ExpValue _ann _span (ValVariable name) -> pure name
+                                    _ -> error $ "Subroutine argument for parameter " ++ parameterName ++ " must currently be a variable, cannot do e.g. call foo(x+11)"
+                            
+                            parameterBinding <-
+                                case Map.lookup parameterName (env localState) of
+                                    Nothing -> error $ "Subroutine parameter is not declared: " ++ parameterName
+                                    Just binding -> pure binding
+                            
+                            callerBinding <-
+                                case Map.lookup argumentName callerEnv of
+                                    Nothing -> error $ "Subroutine argument is not declared in caller: " ++ argumentName
+                                    Just binding -> pure binding
+
+                            let updatedCallerEnv = Map.insert argumentName (callerBinding { varValue = varValue parameterBinding }) callerEnv
+                            copyArgumentsBack updatedCallerEnv rest
+
+

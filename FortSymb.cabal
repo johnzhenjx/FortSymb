@@ -29,8 +29,8 @@ library
     Attributes
     EvalExpr
     Executor
-    Functions
     Printer
+    Procedures
     Solver
     Types
   other-modules:
