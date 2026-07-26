@@ -59,7 +59,7 @@ preprocessAssertions source =
 
 main :: IO ()
 main = do
-    let filename = "test3.f90"
+    let filename = "test1.f90"
     contents <- B.readFile filename
 
     let transformedSource = B.pack (preprocessAssertions (B.unpack contents))
