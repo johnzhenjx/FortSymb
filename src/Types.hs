@@ -69,7 +69,7 @@ data ProcedureDef a
 type ProcedureEnv a = Map String (ProcedureDef a)
 
 
-data ObligationKind = UserAssertions | DivByZero | ArrayBounds | ArrayShape
+data ObligationKind = UserAssertions | DivByZero | ArrayBounds | ArrayShape | IncrementStepNonZero
     deriving (Eq, Ord, Show)
 
 data ExecutorFlags = ExecutorFlags 

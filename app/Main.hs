@@ -83,6 +83,7 @@ main = do
                     , (DivByZero, True)
                     , (ArrayBounds, True)
                     , (ArrayShape, True)
+                    , (IncrementStepNonZero, True)
                     ]
               , maxDoLoopUnroll = 5
             }

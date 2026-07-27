@@ -216,7 +216,9 @@ execDoBlock sym flags span maybeName maybeSpec body state =
                             incrementBranches
                             (\(incrementValue, state3) ->
                                 case (initialValue, limitValue, incrementValue) of
-                                        ( SomeInt initialInt, SomeInt limitInt, SomeInt incrementInt ) ->
+                                        ( SomeInt initialInt, SomeInt limitInt, SomeInt incrementInt ) -> do
+                                            state4 <- addIncrementStepNonZeroObligation sym incrementInt state3
+                                            -- the increment expression’s value is fixed when the DO loop begins
                                             runDoLoop
                                                 sym
                                                 flags
@@ -228,7 +230,7 @@ execDoBlock sym flags span maybeName maybeSpec body state =
                                                 limitInt
                                                 incrementInt
                                                 body
-                                                state3
+                                                state4
 
                                         _ -> error "DO loop initial value, limit, and increment must be integers"
                             )
@@ -236,6 +238,19 @@ execDoBlock sym flags span maybeName maybeSpec body state =
                 )
 
     where 
+        addIncrementStepNonZeroObligation sym increment state = do
+            zero <- intLit sym 0
+            incrementIsNonZero <- notPred sym =<< intEq sym increment zero
+
+            let obligation = Obligation
+                        { obligationKind = IncrementStepNonZero
+                        , obligationPredicate = incrementIsNonZero
+                        , obligationPath = pathCond state
+                        }
+
+            pure state { obligations = obligation : obligations state }
+
+
         runDoLoop
             sym
             flags
@@ -487,8 +502,6 @@ execAllocate sym flags allocationObjects initialState = allocateObjects allocati
                                                 _ -> error "Allocation upper bound must be an integer"))
 
                 IxRange _ann _span _lower _upper (Just _stride) -> error "Allocation strides are not supported"
-
-                _ -> error "Unsupported allocation dimension"
 
 
 declareVars ::

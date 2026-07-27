@@ -139,6 +139,7 @@ The following constructor features are not currently supported:
 ### LOOPS
 
 - Do while with integer initial, limit and increment, loop max in flags
+- IncrementStepNonZero obligation
 - No names right now
 
 
