@@ -5,19 +5,27 @@ module Printer where
 
 import qualified Data.Map as Map
 
-import Types
 import Arrays
-import What4.Interface
+import Types
 
 import What4.Expr
-         ( ExprBuilder )
+    ( ExprBuilder
+    )
+import What4.Interface
+    ( BaseBoolType
+    , IsExpr
+    , SymExpr
+    , printSymExpr
+    )
 
 
 showSymExpr :: IsExpr expr => expr tp -> String
-showSymExpr = show . printSymExpr
+showSymExpr =
+    show . printSymExpr
 
 
-showBinding :: IsExpr (SymExpr sym) =>
+showBinding ::
+    IsExpr (SymExpr sym) =>
     VarBinding sym ->
     String
 showBinding binding =
@@ -30,7 +38,10 @@ showBinding binding =
                 ", initialised = " ++ showSomeExpr value
 
 
-showSomeExpr :: IsExpr (SymExpr sym) => SomeExpr sym -> String
+showSomeExpr ::
+    IsExpr (SymExpr sym) =>
+    SomeExpr sym ->
+    String
 showSomeExpr value =
     case value of
         SomeInt expression ->
@@ -42,52 +53,73 @@ showSomeExpr value =
         SomeBool predicate ->
             "bool " ++ showSymExpr predicate
 
-        SomeIntArray arrayRecord ->
-            showArrayRecord "integer" arrayRecord
+        SomeIntArray array ->
+            showArrayRecord "integer" array
 
-        SomeRealArray arrayRecord ->
-            showArrayRecord "real" arrayRecord
+        SomeRealArray array ->
+            showArrayRecord "real" array
 
-        SomeBoolArray arrayRecord ->
-            showArrayRecord "logical" arrayRecord
-    
+        SomeBoolArray array ->
+            showArrayRecord "logical" array
+
 
 showArrayRecord ::
     IsExpr (SymExpr sym) =>
     String ->
     ArrayRecord sym tp ->
     String
-showArrayRecord elementType arrayRecord =
-    elementType
-        ++ " array"
-        -- ++ "\n    rank: "
-        -- ++ show (length dimensions)
-        ++ "\n    dimensions:"
-        ++ showArrayDimensions dimensions
-        ++ "\n    contents: "
-        ++ showSymExpr (arrayContents arrayRecord)
-        ++ "\n    initialisation mask: "
-        ++ showSymExpr (arrayInitMask arrayRecord)
-  where
-    dimensions = arrayDimensions arrayRecord
+showArrayRecord elementType array =
+    unlines
+        [ elementType ++ " array"
+        , "    dimensions:" ++ showArrayDimensions (arrayDimensions array)
+        , "    contents: " ++ showSymExpr (arrayContents array)
+        , "    initialisation mask: " ++ showSymExpr (arrayInitMask array)
+        ]
+
 
 showArrayDimensions ::
     IsExpr (SymExpr sym) =>
     [ArrayDimension sym] ->
     String
-showArrayDimensions [] =
-    " none"
-
 showArrayDimensions dimensions =
-    concatMap showNumberedDimension (zip [1 :: Int ..] dimensions)
+    case dimensions of
+        [] ->
+            " none"
+
+        _ ->
+            concatMap showDimension (numbered dimensions)
   where
-    showNumberedDimension (dimensionNumber, dimension) =
+    showDimension (index, dimension) =
         "\n        "
-            ++ show dimensionNumber
+            ++ show index
             ++ ". lower = "
             ++ showSymExpr (dimensionLower dimension)
             ++ ", upper = "
             ++ showSymExpr (dimensionUpper dimension)
+
+
+showExecutionStatus :: ExecutionStatus -> String
+showExecutionStatus status =
+    case status of
+        ExecutionComplete ->
+            "Complete"
+
+        ExecutionIncomplete reason ->
+            "Incomplete: " ++ showIncompleteReason reason
+
+
+showIncompleteReason :: IncompleteReason -> String
+showIncompleteReason reason =
+    case reason of
+        LoopUnrollLimitReached
+            { incompleteLoopSpan = loopSpan
+            , incompleteUnrollCount = unrollCount
+            } ->
+                "loop unroll limit reached at "
+                    ++ show loopSpan
+                    ++ " after "
+                    ++ show unrollCount
+                    ++ " iterations"
 
 
 printStates ::
@@ -95,15 +127,13 @@ printStates ::
     [SymState sym a] ->
     IO ()
 printStates states = do
-    putStrLn ("Number of states: " ++ show (length states))
+    putStrLn $ "Number of states: " ++ show (length states)
     putStrLn ""
 
-    mapM_
-        printNumberedState
-        (zip [(1 :: Int) ..] states)
+    mapM_ printNumberedState (numbered states)
   where
     printNumberedState (index, state) = do
-        putStrLn ("=== State " ++ show index ++ " ===")
+        putStrLn $ "=== State " ++ show index ++ " ==="
         printState state
 
 
@@ -112,6 +142,8 @@ printState ::
     SymState sym a ->
     IO ()
 printState state = do
+    putStrLn $ "Execution status: " ++ showExecutionStatus (executionStatus state)
+
     printEnvironment state
 
     printPredicates
@@ -132,20 +164,17 @@ printEnvironment ::
 printEnvironment state = do
     putStrLn "Environment:"
 
-    case Map.toList (env state) of
-        [] ->
-            putStrLn "  <empty>"
-
-        bindings ->
-            mapM_ printBinding bindings
+    printCollection
+        "  <empty>"
+        printBinding
+        (Map.toList (env state))
   where
     printBinding (name, binding) =
-        putStrLn
-            ( "  "
+        putStrLn $
+            "  "
                 ++ name
                 ++ " : "
                 ++ showBinding binding
-            )
 
 
 printPredicates ::
@@ -157,22 +186,17 @@ printPredicates ::
 printPredicates heading emptyMessage predicates = do
     putStrLn heading
 
-    case predicates of
-        [] ->
-            putStrLn ("  " ++ emptyMessage)
-
-        _ ->
-            mapM_
-                printNumberedPredicate
-                (zip [(1 :: Int) ..] predicates)
+    printCollection
+        ("  " ++ emptyMessage)
+        printPredicate
+        (numbered predicates)
   where
-    printNumberedPredicate (index, predicate) =
-        putStrLn
-            ( "  "
+    printPredicate (index, predicate) =
+        putStrLn $
+            "  "
                 ++ show index
                 ++ ". "
                 ++ showSymExpr predicate
-            )
 
 
 printObligations ::
@@ -182,139 +206,116 @@ printObligations ::
 printObligations obligationsToPrint = do
     putStrLn "Proof obligations:"
 
-    case obligationsToPrint of
-        [] ->
-            putStrLn "  <none>"
-
-        _ ->
-            mapM_
-                printNumberedObligation
-                (zip [(1 :: Int) ..] obligationsToPrint)
+    printCollection
+        "  <none>"
+        printObligation
+        (numbered obligationsToPrint)
   where
-    printNumberedObligation (index, obligation) = do
-        putStrLn
-            ( "  "
+    printObligation (index, obligation) = do
+        putStrLn $
+            "  "
                 ++ show index
                 ++ ". "
                 ++ show (obligationKind obligation)
-            )
 
-        putStrLn
-            ( "     Predicate: "
+        putStrLn $
+            "     Predicate: "
                 ++ showSymExpr (obligationPredicate obligation)
-            )
 
-        putStrLn "     Path at generation:"
-
-        case reverse (obligationPath obligation) of
-            [] ->
-                putStrLn "       <true>"
-
-            predicates ->
-                mapM_
-                    printPathPredicate
-                    (zip [(1 :: Int) ..] predicates)
-
-    printPathPredicate (index, predicate) =
-        putStrLn
-            ( "       "
-                ++ show index
-                ++ ". "
-                ++ showSymExpr predicate
-            )
-
+        printPredicates
+            "     Path at generation:"
+            "<true>"
+            (reverse (obligationPath obligation))
 
 
 printAllObligationResults ::
-    [ [ ( Obligation (ExprBuilder t st fs)
+    [[
+        ( Obligation (ExprBuilder t st fs)
         , ObligationResult
         )
-      ]
-    ] ->
+    ]] ->
     IO ()
 printAllObligationResults stateResults =
-    printStateResults 1 stateResults
+    mapM_ printStateResult (numbered stateResults)
   where
-    printStateResults stateNumber remainingStateResults =
-        case remainingStateResults of
-            [] ->
-                pure ()
+    printStateResult (stateNumber, results) = do
+        putStrLn $
+            "=== Obligation results for state "
+                ++ show stateNumber
+                ++ " ==="
 
-            results : laterResults -> do
-                putStrLn
-                    ("=== Obligation results for state "
-                        ++ show stateNumber
-                        ++ " ==="
-                    )
+        printCollection
+            "  <none>"
+            printObligationResult
+            (numbered results)
 
-                printObligationResults 1 results
+        putStrLn ""
 
-                putStrLn ""
+    printObligationResult
+        ( obligationNumber
+        , (obligation, result)
+        ) = do
+            putStrLn $
+                "  "
+                    ++ show obligationNumber
+                    ++ ". "
+                    ++ show (obligationKind obligation)
+                    ++ ": "
+                    ++ showObligationResult result
 
-                printStateResults
-                    (stateNumber + 1)
-                    laterResults
+            case result of
+                ObligationValid ->
+                    pure ()
 
-    printObligationResults obligationNumber remainingResults =
-        case remainingResults of
-            [] ->
-                putStrLn "  <none>"
+                ObligationInvalid counterexample ->
+                    printCounterexample counterexample
 
-            (obligation, result) : laterResults -> do
-                putStrLn
-                    ( "  "
-                        ++ show obligationNumber
-                        ++ ". "
-                        ++ show (obligationKind obligation)
-                        ++ ": "
-                        ++ resultSummary result
-                    )
 
-                case result of
-                    ObligationValid ->
-                        pure ()
+showObligationResult :: ObligationResult -> String
+showObligationResult result =
+    case result of
+        ObligationValid ->
+            "Valid"
 
-                    ObligationInvalid counterexample ->
-                        printStoredCounterexample
-                            counterexample
+        ObligationInvalid _ ->
+            "Invalid"
 
-                printObligationResults
-                    (obligationNumber + 1)
-                    laterResults
 
-    resultSummary result =
-        case result of
-            ObligationValid ->
-                "Valid"
+printCounterexample :: Counterexample -> IO ()
+printCounterexample counterexample =
+    case Map.toList counterexample of
+        [] ->
+            putStrLn "     Counterexample: <empty>"
 
-            ObligationInvalid _ ->
-                "Invalid"
+        variables -> do
+            putStrLn "     Counterexample:"
 
-    printStoredCounterexample counterexample =
-        case Map.toList counterexample of
-            [] ->
-                putStrLn "     Counterexample: <empty>"
+            mapM_
+                printVariable
+                variables
+  where
+    printVariable (name, maybeValue) =
+        putStrLn $
+            "       "
+                ++ name
+                ++ " = "
+                ++ maybe "<uninitialised>" id maybeValue
 
-            variables -> do
-                putStrLn "     Counterexample:"
-                printVariables variables
 
-    printVariables variables =
-        case variables of
-            [] ->
-                pure ()
+printCollection ::
+    String ->
+    (value -> IO ()) ->
+    [value] ->
+    IO ()
+printCollection emptyMessage printValue values =
+    case values of
+        [] ->
+            putStrLn emptyMessage
 
-            (name, maybeValue) : remainingVariables -> do
-                putStrLn
-                    ( "       "
-                        ++ name
-                        ++ " = "
-                        ++ case maybeValue of
-                            Nothing ->
-                                "<uninitialised>"
+        _ ->
+            mapM_ printValue values
 
-                            Just value ->
-                                value
-                    )
 
-                printVariables remainingVariables
+numbered :: [value] -> [(Int, value)]
+numbered =
+    zip [1 ..]

@@ -2,6 +2,7 @@ module Procedures where
 
 import Language.Fortran.AST
 import What4.Interface
+import What4.Expr.Builder
 
 import Types
 
@@ -69,7 +70,7 @@ buildProcedureEnv = Map.fromList . mapMaybe extractProcedureDef
 
 -- evalFunctionArguments :: IsSymExprBuilder sym 
 --     => sym 
---     -> ObligationFlags 
+--     -> ExecutorFlags 
 --     -> [Expression a] 
 --     -> SymState sym
 --     -> IO ([SomeExpr sym], SymState sym)
@@ -83,12 +84,12 @@ buildProcedureEnv = Map.fromList . mapMaybe extractProcedureDef
 --             pure (argumentValue : remainingValues, state2)
 
 
-evalMatchedFunctionArguments :: IsSymExprBuilder sym 
-    => sym 
-    -> ObligationFlags 
+evalMatchedFunctionArguments :: 
+    ExprBuilder t st fs
+    -> ExecutorFlags 
     -> [(VarName, Expression a)] 
-    -> SymState sym a 
-    -> IO [([(VarName, SomeExpr sym)], SymState sym a)]
+    -> SymState (ExprBuilder t st fs) a 
+    -> IO [([(VarName, SomeExpr (ExprBuilder t st fs))], SymState (ExprBuilder t st fs) a)]
 evalMatchedFunctionArguments sym flags matchedArguments initialState =
     go matchedArguments initialState
     where
@@ -98,22 +99,22 @@ evalMatchedFunctionArguments sym flags matchedArguments initialState =
             (parameterName, expression) : remainingArguments ->
                 bindBranches
                     (evalExpr sym flags expression state)
-                    (\value state1 ->
+                    (\(value, state1) ->
                         bindBranches
                             (go remainingArguments state1)
-                            (\remainingValues state2 ->
+                            (\(remainingValues, state2) ->
                                 pure [ ( (parameterName, value) : remainingValues, state2 ) ]
                             )
                     )
 
 -- subroutines may pass uninitialised variables inside and assign to them inside the call
 -- thus we need to wrap evaluated expressions inside Maybe
-evalMatchedSubroutineArguments :: IsSymExprBuilder sym 
-    => sym 
-    -> ObligationFlags 
-    -> [(VarName, Expression a)] 
-    -> SymState sym a 
-    -> IO [([(VarName, Maybe (SomeExpr sym))], SymState sym a)]
+evalMatchedSubroutineArguments ::
+    ExprBuilder t st fs
+    -> ExecutorFlags
+    -> [(VarName, Expression a)]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [([(VarName, Maybe (SomeExpr (ExprBuilder t st fs)))], SymState (ExprBuilder t st fs) a)]
 evalMatchedSubroutineArguments sym flags matchedArguments initialState =
     go matchedArguments initialState
     where
@@ -138,10 +139,10 @@ evalMatchedSubroutineArguments sym flags matchedArguments initialState =
                     _ ->
                         bindBranches
                             (evalExpr sym flags expression state)
-                            (\value state1 ->
+                            (\(value, state1) ->
                                 bindBranches
                                     (go remainingArguments state1)
-                                    (\remainingValues state2 ->
+                                    (\(remainingValues, state2) ->
                                         pure [ ( (parameterName, Just value) : remainingValues, state2 ) ]
                                     )
                             )
@@ -212,7 +213,7 @@ matchProcedureArguments parameterNames arguments = do
 --after declaration blocks, bind input values to their corrosponding variable bindings in local scope
 bindFunctionParameters :: IsSymExprBuilder sym 
     => sym 
-    -> ObligationFlags 
+    -> ExecutorFlags 
     -> [(VarName, SomeExpr sym)] 
     -> SymState sym a 
     -> IO (SymState sym a)
@@ -234,7 +235,7 @@ bindFunctionParameters sym flags argumentValues initialState =
 --now this also takes Maybe (SomeExpr sym)
 bindSubroutineParameters :: IsSymExprBuilder sym 
     => sym 
-    -> ObligationFlags 
+    -> ExecutorFlags 
     -> [(VarName, Maybe (SomeExpr sym))] 
     -> SymState sym a 
     -> IO (SymState sym a)
@@ -261,7 +262,7 @@ bindSubroutineParameters sym flags argumentValues initialState =
                                 go state2 rest
                         
 
-coerceParameterValue :: IsSymExprBuilder sym => sym -> ObligationFlags -> VarBinding sym -> SomeExpr sym -> SymState sym a -> IO (SomeExpr sym, SymState sym a)
+coerceParameterValue :: IsSymExprBuilder sym => sym -> ExecutorFlags -> VarBinding sym -> SomeExpr sym -> SymState sym a -> IO (SomeExpr sym, SymState sym a)
 coerceParameterValue sym flags binding argumentValue state =
     case (varType binding, argumentValue) of
         -- Array parameter with array argument

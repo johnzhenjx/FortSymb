@@ -77,12 +77,15 @@ main = do
             sym <- newExprBuilder FloatRealRepr EmptyExprBuilderState nonceGen
             extendConfig z3Options (getConfiguration sym)
 
-            let flags = Map.fromList
+            let flags = ExecutorFlags {
+                obligationFlags = Map.fromList
                     [ (UserAssertions, True)
                     , (DivByZero, True)
                     , (ArrayBounds, True)
                     , (ArrayShape, True)
                     ]
+              , maxDoLoopUnroll = 5
+            }
 
             allStates <- execProgramFile sym flags ast
             printStates allStates

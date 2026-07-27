@@ -121,6 +121,7 @@ vec(i) = 10
 matrix(i, j) = value
 ```
 
+
 ### Array Constructor Limitations
 
 The following constructor features are not currently supported:
@@ -135,9 +136,15 @@ The following constructor features are not currently supported:
 - Complex array constructors
 
 
+### LOOPS
+
+- Do while with integer initial, limit and increment, loop max in flags
+- No names right now
+
+
 ### Functions
 - FUNCTIONS WORK WITH NAMED + POSITIONAL (no subprograms or recursion for now)
-- no subprocs yet
+- subroutines also work (disregarding intents for now)
 
 
 ## Currently Unsupported Features

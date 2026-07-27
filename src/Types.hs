@@ -11,7 +11,8 @@ import What4.Interface
 import What4.BaseTypes
 
 import Language.Fortran.AST
-
+import Language.Fortran.Parser
+import Language.Fortran.Util.Position
 
 type VarName = String
 
@@ -71,7 +72,12 @@ type ProcedureEnv a = Map String (ProcedureDef a)
 data ObligationKind = UserAssertions | DivByZero | ArrayBounds | ArrayShape
     deriving (Eq, Ord, Show)
 
-type ObligationFlags = Map ObligationKind Bool
+data ExecutorFlags = ExecutorFlags 
+    {
+        obligationFlags :: Map ObligationKind Bool,
+        maxDoLoopUnroll :: Int
+    }
+        
 
 data Obligation sym = Obligation
     { obligationKind :: ObligationKind,
@@ -79,16 +85,31 @@ data Obligation sym = Obligation
       obligationPath :: [Pred sym]
     }
 
+
+data ExecutionStatus
+    = ExecutionComplete
+    | ExecutionIncomplete (IncompleteReason)
+    deriving (Show)
+
+data IncompleteReason
+    = LoopUnrollLimitReached
+        { incompleteLoopSpan :: SrcSpan
+        , incompleteUnrollCount    :: Int
+        }
+    deriving (Show)
+
 data SymState sym a = SymState
     { env :: Map VarName (VarBinding sym),
       pathCond :: [Pred sym],
       obligations :: [Obligation sym],
       freshCount :: Int,
-      procedureEnv :: ProcedureEnv a
+      procedureEnv :: ProcedureEnv a,
+      executionStatus :: ExecutionStatus 
     }
 
-isObligationEnabled :: ObligationFlags -> ObligationKind -> Bool
-isObligationEnabled flags kind = Map.findWithDefault False kind flags
+
+isObligationEnabled :: ExecutorFlags -> ObligationKind -> Bool
+isObligationEnabled flags kind = Map.findWithDefault False kind (obligationFlags flags)
 
 
 emptyState :: ProcedureEnv a -> SymState sym a
@@ -97,7 +118,8 @@ emptyState procEnv = SymState
       pathCond = [],
       obligations = [],
       freshCount = 0,
-      procedureEnv = procEnv
+      procedureEnv = procEnv,
+      executionStatus = ExecutionComplete
     }
 
 

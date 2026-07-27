@@ -5,7 +5,8 @@ import qualified Data.Map as Map
 import Language.Fortran.AST
 import qualified Language.Fortran.AST.Literal.Real as ASTReal
 
-import What4.Interface
+import What4.Interface 
+import What4.Expr.Builder
 
 import Data.Ratio ((%))
 
@@ -42,29 +43,23 @@ getVarType typeSpec =
 --     pure (concat nestedResults)
 
 
-bindBranches ::
-    IO [(x, SymState sym a)] ->
-    (x -> SymState sym a -> IO [(y, SymState sym a)]) ->
-    IO [(y, SymState sym a)]
+bindBranches
+    :: Monad m
+    => m [a]
+    -> (a -> m [b])
+    -> m [b]
 bindBranches computation continuation = do
-    results <- computation
-
-    nestedResults <-
-        mapM
-            (\(value, state) ->
-                continuation value state)
-            results
-
+    branches <- computation
+    nestedResults <- mapM continuation branches
     pure (concat nestedResults)
 
 
 --evaluates AST expressions to What4 symbolic expressions
-evalExpr :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
+evalExpr :: ExprBuilder t st fs
+    -> ExecutorFlags
     -> Expression a
-    -> SymState sym a
-    -> IO [(SomeExpr sym, SymState sym a)]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [(SomeExpr (ExprBuilder t st fs), SymState (ExprBuilder t st fs) a)]
 
 evalExpr sym flags expr state = 
     case expr of
@@ -73,16 +68,16 @@ evalExpr sym flags expr state =
         ExpBinary _ann _span op e1 e2 ->  --assumes left to right evaluation
             bindBranches
                 (evalExpr sym flags e1 state)
-                (\v1 state1 ->
+                (\(v1, state1) ->
                     bindBranches
                         (evalExpr sym flags e2 state1)
-                        (\v2 state2 -> evalBinary sym flags op v1 v2 state2)
+                        (\(v2, state2) -> evalBinary sym flags op v1 v2 state2)
                 )
 
         ExpUnary _ann _span op e -> 
             bindBranches
                 (evalExpr sym flags e state)
-                (\value state1 -> evalUnary sym flags op value state1
+                (\(value, state1) -> evalUnary sym flags op value state1
                 )
 
         ExpSubscript _ann _span baseExpr indicesInfo -> evalArraySubscript sym flags baseExpr (alistList indicesInfo) state
@@ -102,13 +97,13 @@ evalExpr sym flags expr state =
 
 
 
-evalArraySubscript :: IsSymExprBuilder sym 
-    => sym 
-    -> ObligationFlags 
+evalArraySubscript :: 
+    ExprBuilder t st fs
+    -> ExecutorFlags 
     -> Expression a 
     -> [Index a] 
-    -> SymState sym a 
-    -> IO [(SomeExpr sym, SymState sym a)]
+    -> SymState (ExprBuilder t st fs) a 
+    -> IO [(SomeExpr (ExprBuilder t st fs), SymState (ExprBuilder t st fs) a)]
 
 evalArraySubscript sym flags baseExpr indicesExprs state = do
     arrayExpr <-
@@ -181,7 +176,7 @@ realAstLitToRational rLit =
                     
 evalBinary :: IsSymExprBuilder sym
     => sym
-    -> ObligationFlags
+    -> ExecutorFlags
     -> BinaryOp
     -> SomeExpr sym
     -> SomeExpr sym
@@ -347,7 +342,7 @@ evalBinary sym flags op v1 v2 state =
 
 evalUnary :: IsSymExprBuilder sym
     => sym
-    -> ObligationFlags
+    -> ExecutorFlags
     -> UnaryOp
     -> SomeExpr sym
     -> SymState sym a
@@ -424,7 +419,7 @@ coerceOnAssignment sym targetType rhs =
 
 coerceArrayOnAssignment :: IsSymExprBuilder sym
     => sym
-    -> ObligationFlags
+    -> ExecutorFlags
     -> SomeExpr sym
     -> SomeExpr sym
     -> SymState sym a

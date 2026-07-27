@@ -9,6 +9,7 @@ import Language.Fortran.Parser
 import Language.Fortran.Version
 import Language.Fortran.AST
 import qualified Language.Fortran.AST.Literal.Real as ASTReal
+import Language.Fortran.Util.Position
 
 import What4.Interface
 import What4.BaseTypes
@@ -51,12 +52,24 @@ import Data.Char (isSpace)
 import Data.List (dropWhileEnd, stripPrefix)
 
 
+addPathConditionAndKeepIfFeasible ::
+    ExprBuilder t st fs ->
+    Pred (ExprBuilder t st fs) ->
+    SymState (ExprBuilder t st fs) a ->
+    IO (Maybe (SymState (ExprBuilder t st fs) a))
+addPathConditionAndKeepIfFeasible sym predicate state = do
+    let newState = state { pathCond = predicate : pathCond state }
+    feasible <- checkStateFeasibility sym newState
+    if feasible
+        then pure (Just newState)
+        else pure Nothing
 
-execProgramFile :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
-    -> ProgramFile a
-    -> IO [SymState sym a]
+
+execProgramFile ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    ProgramFile a ->
+    IO [SymState (ExprBuilder t st fs) a]
 execProgramFile sym flags pf = 
     case programFileProgramUnits pf of
         [pu] -> execProgramUnit sym flags pu
@@ -64,11 +77,11 @@ execProgramFile sym flags pf =
         -- fmap concat ( mapM (execProgramUnit sym) (programFileProgramUnits pf) )
 
 
-execProgramUnit :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
-    -> ProgramUnit a
-    -> IO [SymState sym a]
+execProgramUnit ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    ProgramUnit a ->
+    IO [SymState (ExprBuilder t st fs) a]
 
 execProgramUnit sym flags pu =
     case pu of 
@@ -78,47 +91,253 @@ execProgramUnit sym flags pu =
         _ -> error "Bad"
 
 
-execBlocks :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
-    -> [Block a]
-    -> SymState sym a
-    -> IO [SymState sym a]
+execBlocks ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    [Block a] ->
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
 
 execBlocks sym flags blocks state =
-    case blocks of
-        [] -> pure [state]
-        b:bs -> do
-            statesAfterBlock <- execBlock sym flags b state 
-                -- ^generate new IO state list after execBlock sym b state
-            fmap concat ( mapM (execBlocks sym flags bs) statesAfterBlock )
-                -- ^for statesAfterBlock = IO [s1,s2,...], this yields IO [execBlocks sym bs s1, execBlocks sym bs s2, ...]
-                --  then flattens overall result to get type IO [SymState sym a]
+    case executionStatus state of
+        ExecutionIncomplete _ ->
+            pure [state]
+
+        ExecutionComplete ->
+            case blocks of
+                [] -> pure [state]
+
+                block : remainingBlocks ->
+                    bindBranches
+                        (execBlock sym flags block state)
+                        (\state1 -> execBlocks sym flags remainingBlocks state1)
 
 
-execBlock :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
-    -> Block a
-    -> SymState sym a
-    -> IO [SymState sym a]
+
+execBlock ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    Block a ->
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
 
 execBlock sym flags block state = 
     case block of 
         BlStatement _ann _span _label statement -> execStatement sym flags statement state
+
         --nEcondAndBlocks is a NonEmpty of tuples of cond (Expression) and Block list representing if and else if clauses
-        BlIf _ann _span _label _name nEcondAndBlocks maybeElseBlocks _endIfLabel -> 
-            execIfClauses sym flags (NonEmpty.toList nEcondAndBlocks) maybeElseBlocks state
-        -- BlComment _ann _span comment -> execComment sym flags comment state
-        BlComment _ann _span comment -> pure [state]
+        BlIf 
+            _ann 
+            _span 
+            _label 
+            _name 
+            nEcondAndBlocks
+            maybeElseBlocks 
+            _endIfLabel -> 
+                execIfClauses sym flags (NonEmpty.toList nEcondAndBlocks) maybeElseBlocks state
+
+
+        -- outer: do i = 1, 10
+        --     ...
+        -- end do outer
+
+        -- here, maybeName = Just "outer"
+        -- allows you to specify which layer of the loop to cycle/exit
+        
+        -- DoSpecification	 
+        --  doSpecAnno :: a	 
+        --  doSpecSpan :: SrcSpan	 
+        --  doSpecInitial :: Statement a	- Guaranteed to be StExpressionAssign
+        --  doSpecLimit :: Expression a	 
+        --  doSpecIncrement :: Maybe (Expression a)	 
+
+        BlDo 
+            _ann 
+            span 
+            _label 
+            maybeName 
+            _terminationLabel 
+            maybeSpec 
+            body 
+            _maybeEndDo ->
+                execDoBlock sym flags span maybeName maybeSpec body state
+
+
+
+        BlComment _ann _span _comment -> pure [state]
+
+        _ -> error "Unsupproted Bl"
         -- ...
 
-execStatement :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
-    -> Statement a
-    -> SymState sym a
-    -> IO [SymState sym a]
+
+extractDoSpecification :: DoSpecification a -> (VarName, Expression a, Expression a, Maybe (Expression a))
+extractDoSpecification doSpec =
+    case doSpecInitial doSpec of
+        StExpressionAssign _ _ lhs initialExpr ->
+            case lhs of
+                ExpValue _ _ (ValVariable loopVariable) ->
+                    ( loopVariable
+                    , initialExpr
+                    , doSpecLimit doSpec
+                    , doSpecIncrement doSpec
+                    )
+                _ -> error "DO loop variable must be a variable"
+        _ -> error "Expected assignment in DO specification"
+
+execDoBlock ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    SrcSpan ->
+    Maybe String ->
+    Maybe (DoSpecification a) ->
+    [Block a] ->
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
+
+execDoBlock sym flags span maybeName maybeSpec body state =
+    case maybeSpec of
+        Nothing -> error "Do block without specification (infinite loop) is not supported"
+        Just doSpec -> do
+            let (loopVarName, initialExpr, limitExpr, maybeIncrementExpr ) = extractDoSpecification doSpec
+
+            bindBranches
+                (evalExpr sym flags initialExpr state)
+                (\(initialValue, state1) ->
+                    bindBranches
+                    (evalExpr sym flags limitExpr state1)
+                    (\(limitValue, state2) -> do
+                        let incrementBranches = case maybeIncrementExpr of
+                                Nothing -> do
+                                    one <- intLit sym 1
+                                    pure [(SomeInt one, state2)]
+                                Just incrementExpr -> evalExpr sym flags incrementExpr state2
+
+                        bindBranches
+                            incrementBranches
+                            (\(incrementValue, state3) ->
+                                case (initialValue, limitValue, incrementValue) of
+                                        ( SomeInt initialInt, SomeInt limitInt, SomeInt incrementInt ) ->
+                                            runDoLoop
+                                                sym
+                                                flags
+                                                span
+                                                0
+                                                maybeName
+                                                loopVarName
+                                                initialInt
+                                                limitInt
+                                                incrementInt
+                                                body
+                                                state3
+
+                                        _ -> error "DO loop initial value, limit, and increment must be integers"
+                            )
+                    )
+                )
+
+    where 
+        runDoLoop
+            sym
+            flags
+            span
+            unrollCount
+            maybeName
+            loopVarName
+            currentValue
+            limitValue
+            incrementValue
+            body
+            state = do
+                stateWithIterator <- assignIntegerValue loopVarName currentValue state
+
+                continuePredicate <- makeDoContinuePredicate sym currentValue limitValue incrementValue
+                exitPredicate <- notPred sym continuePredicate
+
+                maybeContinueState <- addPathConditionAndKeepIfFeasible sym continuePredicate stateWithIterator 
+                maybeExitState <- addPathConditionAndKeepIfFeasible sym exitPredicate stateWithIterator
+
+                continuingStates <- 
+                    case maybeContinueState of 
+                        Nothing -> pure []
+                        Just continueState 
+                            | unrollCount >= maxDoLoopUnroll flags -> 
+                                pure
+                                    [ continueState
+                                        { executionStatus =
+                                            ExecutionIncomplete
+                                                LoopUnrollLimitReached
+                                                    { incompleteLoopSpan = span
+                                                    , incompleteUnrollCount = unrollCount
+                                                    }
+                                        }
+                                    ]
+
+                            | otherwise -> do
+                                nextValue <- intAdd sym currentValue incrementValue
+                                bindBranches
+                                    (execBlocks sym flags body continueState)
+                                    (runDoLoop
+                                        sym
+                                        flags
+                                        span
+                                        (unrollCount + 1)
+                                        maybeName
+                                        loopVarName
+                                        nextValue
+                                        limitValue
+                                        incrementValue
+                                        body
+                                    )
+
+                let exitStates =
+                        case maybeExitState of
+                            Nothing -> []
+                            Just exitState -> [exitState]
+
+                pure (exitStates ++ continuingStates)
+
+
+        assignIntegerValue name value state =
+            case Map.lookup name (env state) of
+                Nothing -> error $ "Undeclared variable in doloop (wtf): " ++ name
+
+                Just binding ->
+                    case varType binding of
+                        VarInt ->
+                            pure state
+                                { env = Map.insert 
+                                    name 
+                                    (binding { varValue = Just (SomeInt value) }) 
+                                    (env state) 
+                                }
+
+                        _ -> error $ "Expected integer variable in doloop (wtf): " ++ name
+        
+        -- (increment > 0 && currentValue <= limitValue)
+        -- ||
+        -- (increment < 0 && currentValue >= limitValue)
+        makeDoContinuePredicate sym current limit increment = do
+            zero <- intLit sym 0
+
+            incrementPositive <- intLt sym zero increment
+            incrementNegative <- intLt sym increment zero
+
+            withinPositiveLimit <- intLe sym current limit
+            withinNegativeLimit <- intLe sym limit current
+
+            continuePositive <- andPred sym incrementPositive withinPositiveLimit
+            continueNegative <- andPred sym incrementNegative withinNegativeLimit
+
+            orPred sym continuePositive continueNegative
+
+
+
+execStatement ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    Statement a ->
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
 
 execStatement sym flags statement state = 
     case statement of
@@ -149,12 +368,12 @@ execStatement sym flags statement state =
         _ -> error "Unsupported statement type"
 
 
-execAllocate :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
+execAllocate :: 
+    ExprBuilder t st fs
+    -> ExecutorFlags
     -> [Expression a]
-    -> SymState sym a
-    -> IO [SymState sym a]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [SymState (ExprBuilder t st fs) a]
 
 execAllocate sym flags allocationObjects initialState = allocateObjects allocationObjects [initialState]
     where
@@ -216,12 +435,10 @@ execAllocate sym flags allocationObjects initialState = allocateObjects allocati
                 indexExpr : remainingExprs ->
                     bindBranches
                         (evalAllocationDimensionIx indexExpr state)
-                        (\dimension state1 ->
+                        (\(dimension, state1) ->
                             bindBranches
-                                (evalAllocationDimensionIxs
-                                    remainingExprs
-                                    state1)
-                                (\remainingDimensions finalState ->
+                                (evalAllocationDimensionIxs remainingExprs state1)
+                                (\(remainingDimensions, finalState) ->
                                     pure [ ( dimension : remainingDimensions, finalState ) ]
                                 )
                         )
@@ -233,9 +450,10 @@ execAllocate sym flags allocationObjects initialState = allocateObjects allocati
 
                     bindBranches
                         (evalExpr sym flags upperExpr state)
-                        (\upperValue state1 ->
+                        (\(upperValue, state1) ->
                             case upperValue of
-                                SomeInt upperBound -> pure [ ( ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound }, state1 ) ]
+                                SomeInt upperBound -> 
+                                    pure [ ( ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound }, state1 ) ]
                                 _ -> error "Allocation upper bound must be an integer"
                         )
 
@@ -249,22 +467,23 @@ execAllocate sym flags allocationObjects initialState = allocateObjects allocati
                             Just lowerExpr ->
                                 bindBranches
                                     (evalExpr sym flags lowerExpr state)
-                                    (\lowerValue state1 ->
+                                    (\(lowerValue, state1) ->
                                         case lowerValue of
                                             SomeInt lowerBound -> pure [(lowerBound, state1)]
                                             _ -> error "Allocation lower bound must be an integer"
                                     )
                         )
-                        (\lowerBound state1 ->
+                        (\(lowerBound, state1) ->
                             case maybeUpperExpr of
                                 Nothing -> error "Allocation upper bound is required"
 
                                 Just upperExpr ->
                                     bindBranches
                                         (evalExpr sym flags upperExpr state1)
-                                        (\upperValue state2 ->
+                                        (\(upperValue, state2) ->
                                             case upperValue of
-                                                SomeInt upperBound -> pure [ ( ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound }, state2 ) ]
+                                                SomeInt upperBound -> 
+                                                    pure [ ( ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound }, state2 ) ]
                                                 _ -> error "Allocation upper bound must be an integer"))
 
                 IxRange _ann _span _lower _upper (Just _stride) -> error "Allocation strides are not supported"
@@ -272,37 +491,32 @@ execAllocate sym flags allocationObjects initialState = allocateObjects allocati
                 _ -> error "Unsupported allocation dimension"
 
 
-declareVars :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
+declareVars ::
+    ExprBuilder t st fs
+    -> ExecutorFlags
     -> TypeSpec a
     -> [Attribute a]
     -> [Declarator a]
-    -> SymState sym a
-    -> IO [SymState sym a]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [SymState (ExprBuilder t st fs) a]
 
 declareVars sym flags typeSpec attributes decls state =
     case decls of
         [] -> pure [state]
         declaration : remainingDeclarations -> do
-            declarationStates <- declareVar sym flags typeSpec attributes declaration state
-
-            nestedStates <-
-                mapM
-                    (\state1 -> declareVars sym flags typeSpec attributes remainingDeclarations state1)
-                    declarationStates
-
-            pure (concat nestedStates)
+            bindBranches
+                (declareVar sym flags typeSpec attributes declaration state)
+                (\state1 -> declareVars sym flags typeSpec attributes remainingDeclarations state1)
 
 
-declareVar :: IsSymExprBuilder sym 
-    => sym 
-    -> ObligationFlags 
+declareVar ::
+    ExprBuilder t st fs
+    -> ExecutorFlags 
     -> TypeSpec a 
     -> [Attribute a]
     -> Declarator a 
-    -> SymState sym a 
-    -> IO [SymState sym a]
+    -> SymState (ExprBuilder t st fs) a 
+    -> IO [SymState (ExprBuilder t st fs) a]
 declareVar sym flags typeSpec attributes decl state =
     case declaratorVariable decl of
         ExpValue _ann _span (ValVariable name) ->
@@ -318,98 +532,103 @@ declareVar sym flags typeSpec attributes decl state =
         _ -> error "Declaration target is not a variable"
 
 
-declareScalarVar :: IsSymExprBuilder sym 
-    => sym 
-    -> ObligationFlags 
+declareScalarVar ::
+    ExprBuilder t st fs
+    -> ExecutorFlags 
     -> TypeSpec a 
     -> VarName 
     -> Maybe (Expression a) 
-    -> SymState sym a 
-    -> IO [SymState sym a]
+    -> SymState (ExprBuilder t st fs) a 
+    -> IO [SymState (ExprBuilder t st fs) a]
 declareScalarVar sym flags typeSpec name maybeInitial state =
     case maybeInitial of
         Nothing ->
-            pure [state { env = Map.insert name (VarBinding (getVarType typeSpec) Nothing) (env state) }]
+            pure [ state 
+                    { env = 
+                        Map.insert 
+                            name 
+                            (VarBinding (getVarType typeSpec) Nothing) 
+                            (env state) 
+                    }
+                ]
         Just initialExpr -> do
             initialResults <- evalExpr sym flags initialExpr state
             mapM
                 (\(valueBeforeCoercion, state1) -> do
                     valueAfterCoercion <- coerceOnAssignment sym (getVarType typeSpec) valueBeforeCoercion
 
-                    pure state1 { env = Map.insert name (VarBinding (getVarType typeSpec) (Just valueAfterCoercion)) (env state1) }
+                    pure state1 
+                        { env = 
+                            Map.insert 
+                                name 
+                                (VarBinding (getVarType typeSpec) (Just valueAfterCoercion)) 
+                                (env state1) 
+                        }
                 )
                 initialResults
 
 
 --reshape not accepted yet -- scary
-declareArrayVar :: IsSymExprBuilder sym 
-    => sym 
-    -> ObligationFlags 
+declareArrayVar ::
+    ExprBuilder t st fs 
+    -> ExecutorFlags 
     -> TypeSpec a 
     -> [Attribute a]
     -> VarName
     -> AList DimensionDeclarator a
     -> Maybe (Expression a) 
-    -> SymState sym a 
-    -> IO [SymState sym a]
+    -> SymState (ExprBuilder t st fs) a 
+    -> IO [SymState (ExprBuilder t st fs) a]
 
 declareArrayVar sym flags typeSpec attributes name dimensionListInfo maybeInitial state
-    | isAllocatable attributes = pure [state { env = Map.insert name (VarBinding arrayType Nothing) (env state) }]
+    | isAllocatable attributes = 
+        pure [ state { env = Map.insert name (VarBinding arrayType Nothing) (env state) } ]
 
     | otherwise = do
-        dimensionResults <- evalArrayDimensions sym flags (alistList dimensionListInfo) state
+        bindBranches
+            (evalArrayDimensions sym flags (alistList dimensionListInfo) state)
+            (\(dimensions, state1) ->
+                case maybeInitial of
+                    Nothing -> do
+                        arrayValue <- createUninitialisedArray sym name (getVarType typeSpec) dimensions
+                        pure [state1 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state1) }]    
 
-        nestedStates <-
-            mapM
-                (\(dimensions, state1) ->
-                    case maybeInitial of
-                        Nothing -> do
-                            arrayValue <- createUninitialisedArray sym name (getVarType typeSpec) dimensions
-                            pure [state1 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state1) }]            
+                    Just (ExpInitialisation _ann _span elementsInfo) ->
+                        bindBranches
+                            (createArrayFromConstructor
+                                sym
+                                flags
+                                name
+                                (getVarType typeSpec)
+                                dimensions
+                                (alistList elementsInfo)
+                                state1
+                            )
+                            (\(arrayValue, state2) ->
+                                pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }]
+                            )
 
-                        Just (ExpInitialisation _ann _span elementsInfo) -> do
-                            constructorResults <-
-                                createArrayFromConstructor
-                                    sym
-                                    flags
-                                    name
-                                    (getVarType typeSpec)
-                                    dimensions
-                                    (alistList elementsInfo)
-                                    state1
+                    Just initExpr ->
+                        bindBranches
+                            (evalExpr sym flags initExpr state1)
+                            (\(initValue, state2) -> do
+                                coercedValue <- coerceOnAssignment sym (getVarType typeSpec) initValue
+                                arrayValue <- createConstantArray sym dimensions coercedValue
+                                pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }]
+                            )
+            )
 
-                            pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }
-                                | (arrayValue, state2) <- constructorResults
-                                ]
-
-                        Just initExpr -> do
-                            initResults <- evalExpr sym flags initExpr state1
-
-                            mapM
-                                (\(initValue, state2) -> do
-                                    coercedValue <- coerceOnAssignment sym (getVarType typeSpec) initValue
-                                    arrayValue <- createConstantArray sym dimensions coercedValue
-
-                                    pure state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }
-                                )
-                                initResults
-                    )
-                dimensionResults
-
-        pure (concat nestedStates)
-
-    where
-        arrayType = VarArray (getVarType typeSpec) (length (alistList dimensionListInfo))
+    where arrayType = VarArray (getVarType typeSpec) (length (alistList dimensionListInfo))
 
 
 
-execAssign :: IsSymExprBuilder sym
-  => sym
-  -> ObligationFlags
+execAssign ::
+  ExprBuilder t st fs 
+  -> ExecutorFlags
   -> Expression a
   -> Expression a
-  -> SymState sym a
-  -> IO [SymState sym a]
+  -> SymState (ExprBuilder t st fs) a
+  -> IO [SymState (ExprBuilder t st fs) a]
 
 execAssign sym flags lhs rhs state =
     case lhs of
@@ -424,13 +643,12 @@ execAssign sym flags lhs rhs state =
 
 
 execVariableAssign ::
-    IsSymExprBuilder sym =>
-    sym ->
-    ObligationFlags ->
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
     VarName ->
     Expression a ->
-    SymState sym a ->
-    IO [SymState sym a]
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
 execVariableAssign sym flags name rhs state =
     case Map.lookup name (env state) of
         Nothing ->
@@ -446,35 +664,33 @@ execVariableAssign sym flags name rhs state =
                 _ -> execScalarAssign sym flags name binding rhs state
 
 
-execScalarAssign :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
+execScalarAssign ::
+    ExprBuilder t st fs
+    -> ExecutorFlags
     -> VarName
-    -> VarBinding sym
+    -> VarBinding (ExprBuilder t st fs)
     -> Expression a
-    -> SymState sym a
-    -> IO [SymState sym a]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [SymState (ExprBuilder t st fs) a]
 execScalarAssign sym flags name binding rhs state = do
-    rhsResults <- evalExpr sym flags rhs state
-
-    mapM
+    bindBranches
+        (evalExpr sym flags rhs state)
         (\(rhsBeforeCoerce, state1) -> do
             rhsAfterCoerce <- coerceOnAssignment sym (varType binding) rhsBeforeCoerce
 
-            pure state1 { env = Map.insert name (VarBinding (varType binding) (Just rhsAfterCoerce)) (env state1) }
+            pure [ state1 { env = Map.insert name (VarBinding (varType binding) (Just rhsAfterCoerce)) (env state1) } ]
         )
-        rhsResults
                     
 
 -- only supports single element assigns for now
-execArrayElementAssign :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
+execArrayElementAssign ::
+    ExprBuilder t st fs
+    -> ExecutorFlags
     -> Expression a
     -> [Index a]
     -> Expression a
-    -> SymState sym a
-    -> IO [SymState sym a]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [SymState (ExprBuilder t st fs) a]
 
 execArrayElementAssign sym flags baseExpr indexExprs rhs state = do
     name <-
@@ -486,47 +702,46 @@ execArrayElementAssign sym flags baseExpr indexExprs rhs state = do
         Nothing -> error $ "Assignment to undeclared array: " ++ name
         Just _ -> pure ()
 
-    indexResults <- evalArrayIndices sym flags indexExprs state
-
-    nestedStates <-
-        mapM
-            (\(indices, state1) -> do
-                rhsResults <- evalExpr sym flags rhs state1
-
-                mapM
-                    (\(rhsBeforeCoerce, state2) -> do
-                        currentBinding <- --lookup after evalExprs in case function affected array state
+    bindBranches
+        (evalArrayIndices sym flags indexExprs state)
+        (\(indices, state1) ->
+            bindBranches
+                (evalExpr sym flags rhs state1)
+                (\(rhsBeforeCoerce, state2) -> do
+                    currentBinding <- --lookup after evalExprs in case function affected array state
                             case Map.lookup name (env state2) of
                                 Nothing -> error $ "Array disappeared during evaluation: " ++ name
                                 Just binding -> pure binding
 
-                        currentArray <-
+                    currentArray <-
                             case varValue currentBinding of
                                 Nothing -> error $ "Assignment to uninitialised array: " ++ name
                                 Just value -> pure value
 
-                        rhsAfterCoerce <- coerceOnAssignment sym (arrayElementType currentArray) rhsBeforeCoerce
+                    rhsAfterCoerce <- coerceOnAssignment sym (arrayElementType currentArray) rhsBeforeCoerce
 
-                        (updatedArray, state3) <- updateSomeArray sym flags currentArray indices rhsAfterCoerce state2
+                    (updatedArray, state3) <- updateSomeArray sym flags currentArray indices rhsAfterCoerce state2
 
-                        pure state3 { env = Map.insert name (currentBinding { varValue = Just updatedArray }) (env state3) }
-                    )
-                    rhsResults
+                    let updatedBinding =
+                            currentBinding
+                                { varValue = Just updatedArray
+                                }
+
+                    let finalState = state3 { env = Map.insert name updatedBinding (env state3) }
+                    pure [finalState]
                 )
-            indexResults
-
-    pure (concat nestedStates)
+        )
+    
 
 
 execWholeArrayAssign ::
-    IsSymExprBuilder sym =>
-    sym ->
-    ObligationFlags ->
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
     VarName ->
-    VarBinding sym ->
+    VarBinding (ExprBuilder t st fs) ->
     Expression a ->
-    SymState sym a ->
-    IO [SymState sym a]
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
 execWholeArrayAssign sym flags name binding initExpr state = do
     arrayExpr <-
         case varValue binding of
@@ -636,8 +851,8 @@ execRead2Var sym name state =
                 inputName = name ++ "_input_" ++ show n
 
             freshVal <- freshInputForType sym inputName (varType binding)
-            let newState = state { env = Map.insert name (VarBinding (varType binding) (Just freshVal)) (env state), freshCount = n+1 }
-            pure newState
+            let newBinding = VarBinding (varType binding) (Just freshVal)
+            pure state { env = Map.insert name newBinding (env state), freshCount = n+1 }
 
 freshInputForType :: IsSymExprBuilder sym
     => sym
@@ -661,122 +876,131 @@ freshInputForType sym inputName varTy =
 
 
 execIfLogical ::
-    IsSymExprBuilder sym =>
-    sym ->
-    ObligationFlags ->
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
     Expression a ->
     Statement a ->
-    SymState sym a ->
-    IO [SymState sym a]
-execIfLogical sym flags cond stmt state = do
-    conditionResults <- evalExpr sym flags cond state
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
+execIfLogical sym flags cond stmt state = 
+    bindBranches
+        (evalExpr sym flags cond state)
+        (\(condVal, state1) ->
+            case condVal of
+                SomeBool p -> do
+                    notP <- notPred sym p
 
-    nestedResults <-
-        mapM
-            (\(condVal, state1) ->
-                case condVal of
-                    SomeBool p -> do
-                        notP <- notPred sym p
-                        let thenState = state1 { pathCond = p : pathCond state1 }
-                            elseState = state1 { pathCond = notP : pathCond state1 }
+                    maybeThenState <-
+                        addPathConditionAndKeepIfFeasible sym p state1
 
-                        thenResults <- execStatement sym flags stmt thenState
-                        pure (thenResults ++ [elseState])
+                    maybeElseState <-
+                        addPathConditionAndKeepIfFeasible sym notP state1
 
-                    _ -> error "Logical IF condition must evaluate to logical"
-            )
-            conditionResults
+                    thenResults <-
+                        maybe
+                            (pure [])
+                            (execStatement sym flags stmt)
+                            maybeThenState
 
-    pure (concat nestedResults)
+                    let elseResults = maybe [] pure maybeElseState
 
+                    pure (thenResults ++ elseResults)
+
+                _ ->
+                    error "Logical IF condition must evaluate to logical"
+        )
 
 
 --take argument list from preprocessed call, convert to predicate and add to user obligations
-execAssertionArguments :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
+execAssertionArguments :: 
+    ExprBuilder t st fs
+    -> ExecutorFlags
     -> [Argument a]
-    -> SymState sym a
-    -> IO [SymState sym a]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [SymState (ExprBuilder t st fs) a]
 execAssertionArguments sym flags arguments state =
     case arguments of
         [Argument _ann _span Nothing (ArgExpr expr)] -> execAssertionExpr sym flags expr state
         _ ->
             error "fortsymb_assert expects exactly one argument"
 
-execAssertionExpr :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
+execAssertionExpr :: 
+    ExprBuilder t st fs
+    -> ExecutorFlags
     -> Expression a
-    -> SymState sym a
-    -> IO [SymState sym a]
-execAssertionExpr sym flags assertionExpr state = do
-    assertionResults <- evalExpr sym flags assertionExpr state
-
-    mapM
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [SymState (ExprBuilder t st fs) a]
+execAssertionExpr sym flags assertionExpr state =
+    bindBranches
+        (evalExpr sym flags assertionExpr state)
         (\(assertionValue, newState) ->
             case assertionValue of
                 SomeBool predicate -> do
                     let obligation = Obligation
-                            { obligationKind = UserAssertions
-                            , obligationPredicate = predicate
-                            , obligationPath = pathCond newState
-                            }
-
-                    pure newState { obligations = obligation : obligations newState }
+                                { obligationKind = UserAssertions
+                                , obligationPredicate = predicate
+                                , obligationPath = pathCond newState
+                                }
+                    pure [ newState { obligations = obligation : obligations newState } ]
 
                 _ -> error "Assertion is not a logical predicate"
         )
-        assertionResults
 
 
-execIfClauses :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
-    -> [(Expression a, [Block a])] --condAndBlocks
-    -> Maybe [Block a] --maybeElseBlocks
-    -> SymState sym a
-    -> IO [SymState sym a]
-
+execIfClauses ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    [(Expression a, [Block a])] ->
+    Maybe [Block a] ->
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
 execIfClauses sym flags condAndBlocks maybeElseBlocks state =
     case condAndBlocks of
         [] ->
-            case maybeElseBlocks of
-                Nothing -> pure [state]
-                Just elseBlocks -> execBlocks sym flags elseBlocks state
+            maybe
+                (pure [state])
+                (\elseBlocks ->
+                    execBlocks sym flags elseBlocks state
+                )
+                maybeElseBlocks
 
         (cond, blocks) : restClauses -> do
-            conditionResults <- evalExpr sym flags cond state
+            bindBranches
+                (evalExpr sym flags cond state)
+                (\(condVal, state1) ->
+                    case condVal of
+                        SomeBool p -> do
+                            notP <- notPred sym p
+                            maybeThenState <- addPathConditionAndKeepIfFeasible sym p state1
+                            maybeElseState <- addPathConditionAndKeepIfFeasible sym notP state1
 
-            nestedResults <-
-                mapM
-                    (\(condVal, state1) ->
-                        case condVal of
-                            SomeBool p -> do
-                                notP <- notPred sym p
+                            thenResults <-
+                                maybe
+                                    (pure [])
+                                    (execBlocks sym flags blocks)
+                                    maybeThenState
 
-                                let thenState = state1 { pathCond = p : pathCond state1 }
-                                    elseState = state1 { pathCond = notP : pathCond state1 }
+                            restResults <-
+                                maybe
+                                    (pure [])
+                                    (\elseState ->
+                                        execIfClauses sym flags restClauses maybeElseBlocks elseState
+                                    )
+                                    maybeElseState
 
-                                thenResults <- execBlocks sym flags blocks thenState
-                                restResults <- execIfClauses sym flags restClauses maybeElseBlocks elseState
+                            pure (thenResults ++ restResults)
 
-                                pure (thenResults ++ restResults)
-
-                            _ -> error "Logical IF condition must evaluate to logical")
-                    conditionResults
-
-            pure (concat nestedResults)
-
+                        _ -> error "Logical IF condition must evaluate to logical"
+                )
 
 
-evalFunctionCall :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
+evalFunctionCall :: 
+    ExprBuilder t st fs
+    -> ExecutorFlags
     -> Expression a
     -> [Argument a]
-    -> SymState sym a
-    -> IO [(SomeExpr sym, SymState sym a)]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [(SomeExpr (ExprBuilder t st fs), SymState (ExprBuilder t st fs) a)]
 evalFunctionCall sym flags functionExpr arguments callerState = do
     functionName <-
         case functionExpr of
@@ -791,7 +1015,7 @@ evalFunctionCall sym flags functionExpr arguments callerState = do
     let matchedArguments = matchProcedureArguments (functionParameters functionDef) arguments
     bindBranches
         (evalMatchedFunctionArguments sym flags matchedArguments callerState)
-        (\evaluatedArguments callerState1 ->
+        (\(evaluatedArguments, callerState1) ->
             execFunctionDefinition
                 sym
                 flags
@@ -802,14 +1026,14 @@ evalFunctionCall sym flags functionExpr arguments callerState = do
         )
 
 
-execFunctionDefinition :: IsSymExprBuilder sym 
-    => sym 
-    -> ObligationFlags 
+execFunctionDefinition :: 
+    ExprBuilder t st fs
+    -> ExecutorFlags 
     -> String 
     -> ProcedureDef a 
-    -> [(VarName, SomeExpr sym)] 
-    -> SymState sym a 
-    -> IO [(SomeExpr sym, SymState sym a)]
+    -> [(VarName, SomeExpr (ExprBuilder t st fs))] 
+    -> SymState (ExprBuilder t st fs) a 
+    -> IO [(SomeExpr (ExprBuilder t st fs), SymState (ExprBuilder t st fs) a)]
 
 execFunctionDefinition sym flags functionName functionDef argumentValues callerState =
     case functionDef of
@@ -834,29 +1058,41 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
                     ) 
                     body
 
-            declarationStates <- execBlocks sym flags declarationBlocks initialLocalState
+            bindBranches
+                (execBlocks sym flags declarationBlocks initialLocalState)
+                (\declaredLocalState -> do
+                    boundLocalState <- bindFunctionParameters sym flags argumentValues declaredLocalState
 
-            nestedResults <-
-                mapM
-                    (\declaredLocalState -> do
-                        boundLocalState <- bindFunctionParameters sym flags argumentValues declaredLocalState
-                        returnBindingLocalState <- case maybeReturnTypeSpec of
+                    returnBindingLocalState <-
+                        case maybeReturnTypeSpec of
                             Nothing -> pure boundLocalState
+
                             Just returnTypeSpec -> do
                                 let returnBinding = VarBinding (getVarType returnTypeSpec) Nothing
                                 pure boundLocalState { env = Map.insert resultName returnBinding (env boundLocalState) }
-                        finalLocalStates <- execBlocks sym flags executableBlocks returnBindingLocalState
-                        mapM (returnFunctionResult resultName callerState) finalLocalStates)
-                    declarationStates
 
-            pure (concat nestedResults)
-
+                    bindBranches
+                        (execBlocks
+                            sym
+                            flags
+                            executableBlocks
+                            returnBindingLocalState
+                        )
+                        (\localState -> do
+                            result <- returnFunctionResult resultName callerState localState
+                            pure [result]
+                        )
+                )
 
         _ -> error $ "Not a function: " ++ functionName
 
 
     where
-        returnFunctionResult :: VarName -> SymState sym a -> SymState sym a -> IO (SomeExpr sym, SymState sym a)
+        returnFunctionResult :: 
+            VarName -> 
+            SymState (ExprBuilder t st fs) a -> 
+            SymState (ExprBuilder t st fs) a -> 
+            IO (SomeExpr (ExprBuilder t st fs), SymState (ExprBuilder t st fs) a)
         returnFunctionResult resultName callerState localState =
             case Map.lookup resultName (env localState) of
                 Nothing -> error $ "Function result variable is not declared: " ++ resultName
@@ -877,13 +1113,13 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
 
 
                             
-evalSubroutineCall :: IsSymExprBuilder sym
-    => sym
-    -> ObligationFlags
+evalSubroutineCall :: 
+    ExprBuilder t st fs
+    -> ExecutorFlags
     -> Expression a
     -> [Argument a]
-    -> SymState sym a
-    -> IO [SymState sym a]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [SymState (ExprBuilder t st fs) a]
 
 evalSubroutineCall sym flags subroutineExpr arguments callerState = do
     subroutineName <-
@@ -897,35 +1133,30 @@ evalSubroutineCall sym flags subroutineExpr arguments callerState = do
             Nothing -> error $ "Unknown subroutine: " ++ subroutineName
 
     let matchedArguments = matchProcedureArguments (subroutineParameters subroutineDef) arguments
-    evaluatedBranches <- evalMatchedSubroutineArguments sym flags matchedArguments callerState
-
-    nestedStates <-
-        mapM
-            (\(evaluatedArguments, callerState1) ->
-                execSubroutineDefinition
-                    sym
-                    flags
-                    subroutineName
-                    subroutineDef
-                    matchedArguments
-                    evaluatedArguments
-                    callerState1
-            )
-            evaluatedBranches
-
-    pure (concat nestedStates)
+    bindBranches
+        (evalMatchedSubroutineArguments sym flags matchedArguments callerState )
+        (\(evaluatedArguments, callerState1) ->
+            execSubroutineDefinition
+                sym
+                flags
+                subroutineName
+                subroutineDef
+                matchedArguments
+                evaluatedArguments
+                callerState1
+        )
 
 
 
-execSubroutineDefinition :: IsSymExprBuilder sym 
-    => sym 
-    -> ObligationFlags 
+execSubroutineDefinition :: 
+    ExprBuilder t st fs 
+    -> ExecutorFlags 
     -> String 
     -> ProcedureDef a 
     -> [(VarName, Expression a)] 
-    -> [(VarName, Maybe (SomeExpr sym))]
-    -> SymState sym a 
-    -> IO [SymState sym a]
+    -> [(VarName, Maybe (SomeExpr (ExprBuilder t st fs)))]
+    -> SymState (ExprBuilder t st fs) a 
+    -> IO [SymState (ExprBuilder t st fs) a]
 
 execSubroutineDefinition sym flags subroutineName subroutineDef matchedArguments argumentValues callerState = 
     case subroutineDef of
@@ -941,18 +1172,18 @@ execSubroutineDefinition sym flags subroutineName subroutineDef matchedArguments
                     ) 
                     body
 
-            declarationStates <- execBlocks sym flags declarationBlocks initialLocalState
+            bindBranches
+                (execBlocks sym flags declarationBlocks initialLocalState)
+                (\declaredLocalState -> do
+                    boundLocalState <- bindSubroutineParameters sym flags argumentValues declaredLocalState
 
-            nestedResults <-
-                mapM
-                    (\declaredLocalState -> do
-                        boundLocalState <- bindSubroutineParameters sym flags argumentValues declaredLocalState
-                        finalLocalStates <- execBlocks sym flags executableBlocks boundLocalState
-                        mapM (returnSubroutineState matchedArguments callerState) finalLocalStates
-                    )
-                    declarationStates
-
-            pure (concat nestedResults)
+                    bindBranches
+                        (execBlocks sym flags executableBlocks boundLocalState )
+                        (\finalLocalState -> do
+                            returnedState <- returnSubroutineState matchedArguments callerState finalLocalState
+                            pure [returnedState]
+                        )
+                )
 
         _ -> error $ "Not a subroutine: " ++ subroutineName
 

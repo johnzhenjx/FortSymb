@@ -9,4 +9,6 @@ program test1
     do i = 1, x, 2
         result = result * i
     end do
+
+    !@assert result > 1
 end program test1
