@@ -14,11 +14,18 @@ bindBranches
     -> (a -> m [b])
     -> m [b]
 
+bindValueOutcomes
+    :: Monad m
+    => m [ValueOutcome sym a]
+    -> ((SomeExpr sym, SymState sym a) -> m [b])
+    -> (SymState sym a -> m [b])
+    -> m [b]
+
 evalExpr :: ExprBuilder t st fs
     -> ExecutorFlags
     -> Expression a
     -> SymState (ExprBuilder t st fs) a
-    -> IO [(SomeExpr (ExprBuilder t st fs), SymState (ExprBuilder t st fs) a)]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a]
 
 coerceOnAssignment :: IsSymExprBuilder sym
     => sym
@@ -26,10 +33,9 @@ coerceOnAssignment :: IsSymExprBuilder sym
     -> SomeExpr sym
     -> IO (SomeExpr sym)
 
-coerceArrayOnAssignment :: IsSymExprBuilder sym
-    => sym
+coerceArrayOnAssignment :: ExprBuilder t st fs
     -> ExecutorFlags
-    -> SomeExpr sym
-    -> SomeExpr sym
-    -> SymState sym a
-    -> IO (SomeExpr sym, SymState sym a)
+    -> SomeExpr (ExprBuilder t st fs)
+    -> SomeExpr (ExprBuilder t st fs)
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [ValueOutcome (ExprBuilder t st fs) a]

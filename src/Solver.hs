@@ -22,7 +22,6 @@ import What4.Solver
 import What4.Protocol.SMTLib2
          (assume, sessionWriter, runCheckSat)
 
-
 import Prelude hiding (EQ, LT, GT)
 
 import Types
@@ -131,100 +130,23 @@ evaluateStateObligations ::
           )
         ]
 evaluateStateObligations sym state = do
-    let noPreviousObligations = truePred sym
     let orderedObligations = reverse (obligations state)
-    evaluateStateObligationsRecurse sym state noPreviousObligations orderedObligations
-    where
-        evaluateStateObligationsRecurse ::
-            ExprBuilder t st fs ->
-            SymState (ExprBuilder t st fs) a ->
-            Pred (ExprBuilder t st fs) ->
-            [Obligation (ExprBuilder t st fs)] ->
-            IO
-                [ ( Obligation (ExprBuilder t st fs)
-                , ObligationResult
-                )
-                ]
-        evaluateStateObligationsRecurse sym state previousObligationsPred remainingObligations =
-            case remainingObligations of
-                [] -> pure []
-
-                obligation : laterObligations -> do
-                    obligationResult <- evaluateOneObligation sym state previousObligationsPred obligation
-
-                    --FOR NOW, DON'T INCLUDE PREVIOUS USER ASSERTIONS IN ACCUMULATED PREDICATE
-                    --otherwise, if a previous assertion is false, it will "clash" with the pathcond and result in 
-                    --the negated statement being vacuously unsat
-                    --e.g.
-                    --program test_subroutine_calls
-                    --     implicit none
-
-                    --     integer :: x
-                    --     integer :: result
-                    --     integer :: values(3)
-
-                    --     read *, x
-
-                    --     values(1) = 10
-                    --     values(2) = 20
-                    --     values(3) = 30
-
-                    --     call update_values(x, values, result)
-
-                    --     !@assert result == 1
-                    --     !@assert values(1) == 11
-
-                    -- contains
-                    --     subroutine update_values(n, arr, status)
-                    --         implicit none
-
-                    --         integer :: n
-                    --         integer :: arr(3)
-                    --         integer :: status    
-
-                    --         if (n > 0) then
-                    --             arr(1) = arr(1) + 1
-                    --             status = 1
-
-                    --         else if (n == 0) then
-                    --             arr(2) = arr(2) + 2
-                    --             status = 0
-
-                    --         else
-                    --             arr(3) = arr(3) + 3
-                    --             status = -1
-                    --         end if
-
-                    --     end subroutine update_values
-
-                    -- end program test_subroutine_calls
-
-                    --ON STATE 2, ENV CONTAINS RESULT == 0, THUS THE FIRST ASSERTION BECOMES 0 == 1 WHICH IS FALSE
-
-                    updatedPreviousObligationsPred <-
-                        if (obligationKind obligation) == UserAssertions
-                            then pure previousObligationsPred
-                        else 
-                            andPred sym previousObligationsPred (obligationPredicate obligation)
-
-                    laterResults <- evaluateStateObligationsRecurse sym state updatedPreviousObligationsPred laterObligations
-
-                    pure
-                        ( (obligation, obligationResult)
-                        : laterResults
-                        )
+    mapM
+        (\obligation -> do
+            obligationResult <- evaluateOneObligation sym state obligation
+            pure (obligation, obligationResult)
+        )
+        orderedObligations
 
 evaluateOneObligation ::
     ExprBuilder t st fs ->
     SymState (ExprBuilder t st fs) a ->
-    Pred (ExprBuilder t st fs) ->
     Obligation (ExprBuilder t st fs) ->
     IO ObligationResult
-evaluateOneObligation sym state previousObligationsPred obligation = do
+evaluateOneObligation sym state obligation = do
     obligationPathPred <- predicateOfCondList sym (obligationPath obligation)
-    andSection <- andPred sym obligationPathPred previousObligationsPred
     negatedObligation <- notPred sym (obligationPredicate obligation)
-    counterexampleQuery <- andPred sym andSection negatedObligation
+    counterexampleQuery <- andPred sym obligationPathPred negatedObligation
 
     withSolverResult sym counterexampleQuery $ \solverResult ->
         case solverResult of
@@ -311,4 +233,3 @@ groundEvalSomeExpr ge expression =
                     ++ show (length (arrayDimensions arrayRecord))
                     ++ ">"
 
-        

@@ -71,9 +71,9 @@ showArrayRecord ::
 showArrayRecord elementType array =
     unlines
         [ elementType ++ " array"
-        , "    dimensions:" ++ showArrayDimensions (arrayDimensions array)
-        , "    contents: " ++ showSymExpr (arrayContents array)
-        , "    initialisation mask: " ++ showSymExpr (arrayInitMask array)
+        , "dimensions:" ++ showArrayDimensions (arrayDimensions array)
+        , "contents: " ++ showSymExpr (arrayContents array)
+        , "initialisation mask: " ++ showSymExpr (arrayInitMask array)
         ]
 
 
@@ -90,7 +90,7 @@ showArrayDimensions dimensions =
             concatMap showDimension (numbered dimensions)
   where
     showDimension (index, dimension) =
-        "\n        "
+        "\n  "
             ++ show index
             ++ ". lower = "
             ++ showSymExpr (dimensionLower dimension)
@@ -104,12 +104,12 @@ showExecutionStatus status =
         ExecutionComplete ->
             "Complete"
 
-        ExecutionIncomplete reason ->
-            "Incomplete: " ++ showIncompleteReason reason
+        ExecutionHalted reason ->
+            "Halted: " ++ showHaltReason reason
 
 
-showIncompleteReason :: IncompleteReason -> String
-showIncompleteReason reason =
+showHaltReason :: HaltReason -> String
+showHaltReason reason =
     case reason of
         LoopUnrollLimitReached
             { incompleteLoopSpan = loopSpan
@@ -121,6 +121,8 @@ showIncompleteReason reason =
                     ++ show unrollCount
                     ++ " iterations"
 
+        ObligationCannotHold kind ->
+            "obligation cannot hold: " ++ show kind
 
 printStates ::
     IsExpr (SymExpr sym) =>
@@ -174,7 +176,7 @@ printEnvironment state = do
             "  "
                 ++ name
                 ++ " : "
-                ++ showBinding binding
+                ++ indentFollowingLines 4 (showBinding binding)
 
 
 printPredicates ::
@@ -184,16 +186,27 @@ printPredicates ::
     [expr BaseBoolType] ->
     IO ()
 printPredicates heading emptyMessage predicates = do
-    putStrLn heading
+    printPredicatesAt 0 heading emptyMessage predicates
+
+
+printPredicatesAt ::
+    IsExpr expr =>
+    Int ->
+    String ->
+    String ->
+    [expr BaseBoolType] ->
+    IO ()
+printPredicatesAt indentation heading emptyMessage predicates = do
+    putStrLn $ indent indentation heading
 
     printCollection
-        ("  " ++ emptyMessage)
+        (indent (indentation + 2) emptyMessage)
         printPredicate
         (numbered predicates)
   where
     printPredicate (index, predicate) =
         putStrLn $
-            "  "
+            indent (indentation + 2) ""
                 ++ show index
                 ++ ". "
                 ++ showSymExpr predicate
@@ -219,11 +232,12 @@ printObligations obligationsToPrint = do
                 ++ show (obligationKind obligation)
 
         putStrLn $
-            "     Predicate: "
+            "    Predicate: "
                 ++ showSymExpr (obligationPredicate obligation)
 
-        printPredicates
-            "     Path at generation:"
+        printPredicatesAt
+            4
+            "Path at generation:"
             "<true>"
             (reverse (obligationPath obligation))
 
@@ -285,10 +299,10 @@ printCounterexample :: Counterexample -> IO ()
 printCounterexample counterexample =
     case Map.toList counterexample of
         [] ->
-            putStrLn "     Counterexample: <empty>"
+            putStrLn "    Counterexample: <empty>"
 
         variables -> do
-            putStrLn "     Counterexample:"
+            putStrLn "    Counterexample:"
 
             mapM_
                 printVariable
@@ -296,7 +310,7 @@ printCounterexample counterexample =
   where
     printVariable (name, maybeValue) =
         putStrLn $
-            "       "
+            "      "
                 ++ name
                 ++ " = "
                 ++ maybe "<uninitialised>" id maybeValue
@@ -319,3 +333,19 @@ printCollection emptyMessage printValue values =
 numbered :: [value] -> [(Int, value)]
 numbered =
     zip [1 ..]
+
+
+indent :: Int -> String -> String
+indent indentation text =
+    replicate indentation ' ' ++ text
+
+
+indentFollowingLines :: Int -> String -> String
+indentFollowingLines indentation text =
+    case lines text of
+        [] -> ""
+        firstLine : remainingLines ->
+            firstLine
+                ++ concatMap
+                    (\line -> "\n" ++ indent indentation line)
+                    remainingLines

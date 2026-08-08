@@ -1,7 +1,8 @@
 module Arrays where
 
 import Types
-import {-# SOURCE #-} EvalExpr (evalExpr, coerceOnAssignment, bindBranches)
+import {-# SOURCE #-} EvalExpr (evalExpr, coerceOnAssignment, bindBranches, bindValueOutcomes)
+import SymbolicPath
 
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -168,19 +169,24 @@ evalArrayDimensions ::
     -> ExecutorFlags
     -> [DimensionDeclarator a]
     -> SymState (ExprBuilder t st fs) a 
-    -> IO [([ArrayDimension (ExprBuilder t st fs)], SymState (ExprBuilder t st fs) a)]
+    -> IO [(Maybe [ArrayDimension (ExprBuilder t st fs)], SymState (ExprBuilder t st fs) a)]
 evalArrayDimensions sym flags dimensionDecls state =
     case dimensionDecls of
-        [] -> pure [([], state)]
+        [] -> pure [(Just [], state)]
         decl : decls ->
             bindBranches
                 (evalArrayDimension sym flags decl state)
-                (\(dimension, state1) ->
-                    bindBranches
-                        (evalArrayDimensions sym flags decls state1)
-                        (\(dimensions, state2) ->
-                            pure [ (dimension : dimensions, state2) ]
-                        )
+                (\outcome ->
+                    case outcome of
+                        (Nothing, haltedState) -> pure [(Nothing, haltedState)]
+                        (Just dimension, state1) ->
+                            bindBranches
+                                (evalArrayDimensions sym flags decls state1)
+                                (\(maybeDimensions, state2) ->
+                                    case maybeDimensions of
+                                        Nothing -> pure [(Nothing, state2)]
+                                        Just dimensions -> pure [(Just (dimension : dimensions), state2)]
+                                )
                 )
 
 evalArrayDimension ::
@@ -188,7 +194,7 @@ evalArrayDimension ::
     -> ExecutorFlags 
     -> DimensionDeclarator a 
     -> SymState (ExprBuilder t st fs) a 
-    -> IO [(ArrayDimension (ExprBuilder t st fs), SymState (ExprBuilder t st fs) a)]
+    -> IO [(Maybe (ArrayDimension (ExprBuilder t st fs)), SymState (ExprBuilder t st fs) a)]
 
 evalArrayDimension sym flags dimensionDecl state =
     case dimDeclUpper dimensionDecl of
@@ -199,26 +205,31 @@ evalArrayDimension sym flags dimensionDecl state =
                 (case dimDeclLower dimensionDecl of
                     Nothing -> do --default lower bound of 1
                         lowerBound <- intLit sym 1
-                        pure [(lowerBound, state)]
+                        pure [(Just lowerBound, state)]
 
                     Just lowerExpr ->
-                        bindBranches
+                        bindValueOutcomes
                             (evalExpr sym flags lowerExpr state)
                             (\(value, state1) ->
                                 case value of
-                                    SomeInt lowerBound -> pure [(lowerBound, state1)]
+                                    SomeInt lowerBound -> pure [(Just lowerBound, state1)]
                                     _ -> error "Array lower bound must be an integer expression"
-                        )
+                            )
+                            (\haltedState -> pure [(Nothing, haltedState)])
                 )
-                (\(lowerBound, state1) ->
-                    bindBranches
-                        (evalExpr sym flags upperExpr state1)
-                        (\(value, state2) ->
-                            case value of
-                                SomeInt upperBound ->
-                                    pure [ ( ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound}, state2 ) ]
-                                _ -> error "Array upper bound must be an integer expression"
-                        )
+                (\(maybeLowerBound, state1) ->
+                    case maybeLowerBound of
+                        Nothing -> pure [(Nothing, state1)]
+                        Just lowerBound ->
+                            bindValueOutcomes
+                                (evalExpr sym flags upperExpr state1)
+                                (\(value, state2) ->
+                                    case value of
+                                        SomeInt upperBound ->
+                                            pure [ (Just (ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound}), state2) ]
+                                        _ -> error "Array upper bound must be an integer expression"
+                                )
+                                (\haltedState -> pure [(Nothing, haltedState)])
                 )
 
 
@@ -228,14 +239,14 @@ evalArrayIndices ::
     -> ExecutorFlags
     -> [Index a]
     -> SymState (ExprBuilder t st fs) a
-    -> IO [([SymExpr (ExprBuilder t st fs) BaseIntegerType], SymState (ExprBuilder t st fs) a)]
+    -> IO [(Maybe [SymExpr (ExprBuilder t st fs) BaseIntegerType], SymState (ExprBuilder t st fs) a)]
 
 evalArrayIndices sym flags indices state =
     case indices of
-        [] -> pure [([], state)]
+        [] -> pure [(Just [], state)]
 
         (IxSingle _ann _span Nothing indexExpr) : remainingNodes ->
-            bindBranches
+            bindValueOutcomes
                 (evalExpr sym flags indexExpr state)
                 (\(indexValue, state1) -> do
                     integerIndex <- case indexValue of
@@ -244,9 +255,12 @@ evalArrayIndices sym flags indices state =
 
                     bindBranches
                         (evalArrayIndices sym flags remainingNodes state1)
-                        (\(remainingIndices, finalState) ->
-                            pure [ ( integerIndex : remainingIndices, finalState) ])
+                        (\(maybeRemainingIndices, finalState) ->
+                            case maybeRemainingIndices of
+                                Nothing -> pure [(Nothing, finalState)]
+                                Just remainingIndices -> pure [(Just (integerIndex : remainingIndices), finalState)])
                     )
+                (\haltedState -> pure [(Nothing, haltedState)])
         _ ->
                     error "Unsupported array section or index"
 
@@ -359,28 +373,35 @@ createArrayFromConstructor ::
     -> [ArrayDimension (ExprBuilder t st fs)]
     -> [Expression a]
     -> SymState (ExprBuilder t st fs) a
-    -> IO [(SomeExpr (ExprBuilder t st fs), SymState (ExprBuilder t st fs) a)]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a]
 
 createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
     initialArray <- createUninitialisedArray sym name declaredType dimensions
     stateWithShapeCheck <- addConstructorShapeObligation sym flags dimensions (length elementExprs) state
     -- ^ checks if the length of initialisation array matches the number of elements in declared array
-    writeConstructorElements initialArray 0 elementExprs stateWithShapeCheck
+    case executionStatus stateWithShapeCheck of
+        ExecutionHalted _ -> pure [ValueComputationHaltedState stateWithShapeCheck]
+        ExecutionComplete -> writeConstructorElements initialArray 0 elementExprs stateWithShapeCheck
 
     where
         writeConstructorElements arrayExpr flatPosition elementExprs state = 
             case elementExprs of
-                [] -> pure [(arrayExpr, state)]
+                [] -> pure [ValueAndStateProduced arrayExpr state]
                 (elementExpr : remainingExprs) -> 
-                    bindBranches
+                    bindValueOutcomes
                         (evalExpr sym flags elementExpr state)
                         (\(elementValue, state1) -> do
                             coercedValue <- coerceOnAssignment sym declaredType elementValue
                             flatIndex <- intLit sym flatPosition
                             indices <- unflattenArrayIndex sym dimensions flatIndex
-                            (updatedArray, state2) <- updateSomeArray sym flags arrayExpr indices coercedValue state1
-                            writeConstructorElements updatedArray (flatPosition + 1) remainingExprs state2
+                            bindValueOutcomes
+                                (updateSomeArray sym flags arrayExpr indices coercedValue state1)
+                                (\(updatedArray, state2) ->
+                                    writeConstructorElements updatedArray (flatPosition + 1) remainingExprs state2
+                                )
+                                (\haltedState -> pure [ValueComputationHaltedState haltedState])
                         )
+                        (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
 
         addConstructorShapeObligation sym flags dimensions constructorLength state
@@ -392,62 +413,16 @@ createArrayFromConstructor sym flags name declaredType dimensions elementExprs s
                 suppliedSize <- intLit sym (toInteger constructorLength)
                 shapeMatches <- isEq sym arraySize suppliedSize
                 
-                let obligation = Obligation
-                        { obligationKind = ArrayShape
-                        , obligationPredicate = shapeMatches
-                        , obligationPath = pathCond state
-                        }
-
-                pure state { obligations = obligation : obligations state }
-
-
--- createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
---     initialArray <- createUninitialisedArray sym name declaredType dimensions
---     stateWithShapeCheck <- addConstructorShapeObligation sym flags dimensions (length elementExprs) state
---     -- ^ checks if the length of initialisation array matches the number of elements in declared array
---     writeConstructorElements initialArray 0 elementExprs stateWithShapeCheck
-
---     where
---         writeConstructorElements arrayExpr flatPosition elementExprs state = 
---             case elementExprs of
---                 [] -> pure (arrayExpr, state)
---                 (elementExpr : remainingExprs) -> do
---                     (elementValue, state1) <- evalExpr sym flags elementExpr state
---                     coercedValue <- coerceOnAssignment sym declaredType elementValue
-
---                     flatIndex <- intLit sym flatPosition
---                     indices <- unflattenArrayIndex sym dimensions flatIndex
---                     (updatedArray, state2) <- updateSomeArray sym flags arrayExpr indices coercedValue state1
---                     writeConstructorElements updatedArray (flatPosition + 1) remainingExprs state2
-
-
---         addConstructorShapeObligation sym flags dimensions constructorLength state
---             | not (isObligationEnabled flags ArrayShape) = pure state
---             | otherwise = do
---                 extents <- mapM (dimensionExtent sym) dimensions
---                 one <- intLit sym 1
---                 arraySize <- foldM (intMul sym) one extents
---                 suppliedSize <- intLit sym (toInteger constructorLength)
---                 shapeMatches <- isEq sym arraySize suppliedSize
-                
---                 let obligation = Obligation
---                         { obligationKind = ArrayBounds
---                         , obligationPredicate = shapeMatches
---                         , obligationPath = pathCond state
---                         }
-
---                 pure state { obligations = obligation : obligations state }
-
+                addObligationAndAssume sym ArrayShape shapeMatches state
 
 
 --using normal index lists
-lookupSomeArray :: IsSymExprBuilder sym 
-    => sym
+lookupSomeArray :: ExprBuilder t st fs
     -> ExecutorFlags
-    -> SomeExpr sym 
-    -> [SymExpr sym BaseIntegerType]
-    -> SymState sym a
-    -> IO (SomeExpr sym, SymState sym a)
+    -> SomeExpr (ExprBuilder t st fs)
+    -> [SymExpr (ExprBuilder t st fs) BaseIntegerType]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [ValueOutcome (ExprBuilder t st fs) a]
 lookupSomeArray sym flags arrayExpr indices state =
     case arrayExpr of
         SomeIntArray arrayRecord -> lookupArray sym flags indices SomeInt arrayRecord state
@@ -462,29 +437,26 @@ lookupSomeArray sym flags arrayExpr indices state =
                 if isObligationEnabled flags ArrayBounds
                     then do
                         inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices
-                        let obligation = Obligation
-                                { obligationKind = ArrayBounds
-                                , obligationPredicate = inBoundsPred
-                                , obligationPath = pathCond state
-                                }
-                        pure state { obligations = obligation : obligations state }
+                        addObligationAndAssume sym ArrayBounds inBoundsPred state
 
                     else pure state
 
-            flatIndex <- flattenArrayIndices sym (arrayDimensions arrayRecord) indices
-            value <- arrayLookup sym (arrayContents arrayRecord) (Ctx.singleton flatIndex)
-            pure (wrap value, newState)
+            case executionStatus newState of
+                ExecutionHalted _ -> pure [ValueComputationHaltedState newState]
+                ExecutionComplete -> do
+                    flatIndex <- flattenArrayIndices sym (arrayDimensions arrayRecord) indices
+                    value <- arrayLookup sym (arrayContents arrayRecord) (Ctx.singleton flatIndex)
+                    pure [ValueAndStateProduced (wrap value) newState]
 
 
 
-updateSomeArray :: IsSymExprBuilder sym 
-    => sym
+updateSomeArray :: ExprBuilder t st fs
     -> ExecutorFlags
-    -> SomeExpr sym 
-    -> [SymExpr sym BaseIntegerType] 
-    -> SomeExpr sym 
-    -> SymState sym a
-    -> IO (SomeExpr sym, SymState sym a)
+    -> SomeExpr (ExprBuilder t st fs)
+    -> [SymExpr (ExprBuilder t st fs) BaseIntegerType]
+    -> SomeExpr (ExprBuilder t st fs)
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [ValueOutcome (ExprBuilder t st fs) a]
 updateSomeArray sym flags arrayExpr indices newValue state =
     case (arrayExpr, newValue) of
         (SomeIntArray arrayRecord, SomeInt value) -> updateArray sym flags indices SomeIntArray arrayRecord value state
@@ -503,17 +475,15 @@ updateSomeArray sym flags arrayExpr indices newValue state =
                 if isObligationEnabled flags ArrayBounds
                     then do
                         inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices
-                        let obligation = Obligation
-                                { obligationKind = ArrayBounds
-                                , obligationPredicate = inBoundsPred
-                                , obligationPath = pathCond state
-                                }
-                        pure state { obligations = obligation : obligations state }
+                        addObligationAndAssume sym ArrayBounds inBoundsPred state
 
                     else pure state
 
-            flatIndex <- flattenArrayIndices sym (arrayDimensions arrayRecord) indices
-            updatedContents <- arrayUpdate sym (arrayContents arrayRecord) (Ctx.singleton flatIndex) value
-            updatedInitMask <- arrayUpdate sym (arrayInitMask arrayRecord) (Ctx.singleton flatIndex) (truePred sym)
-            let updatedArray = wrap arrayRecord { arrayContents = updatedContents, arrayInitMask = updatedInitMask }
-            pure (updatedArray, newState)
+            case executionStatus newState of
+                ExecutionHalted _ -> pure [ValueComputationHaltedState newState]
+                ExecutionComplete -> do
+                    flatIndex <- flattenArrayIndices sym (arrayDimensions arrayRecord) indices
+                    updatedContents <- arrayUpdate sym (arrayContents arrayRecord) (Ctx.singleton flatIndex) value
+                    updatedInitMask <- arrayUpdate sym (arrayInitMask arrayRecord) (Ctx.singleton flatIndex) (truePred sym)
+                    let updatedArray = wrap arrayRecord { arrayContents = updatedContents, arrayInitMask = updatedInitMask }
+                    pure [ValueAndStateProduced updatedArray newState]

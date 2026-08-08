@@ -88,15 +88,22 @@ data Obligation sym = Obligation
 
 data ExecutionStatus
     = ExecutionComplete
-    | ExecutionIncomplete (IncompleteReason)
+    | ExecutionHalted HaltReason
     deriving (Show)
 
-data IncompleteReason
+data HaltReason
     = LoopUnrollLimitReached
         { incompleteLoopSpan :: SrcSpan
         , incompleteUnrollCount    :: Int
         }
+    | ObligationCannotHold
+        { unsatObligationKind :: ObligationKind
+        }
     deriving (Show)
+
+data ValueOutcome sym a
+    = ValueAndStateProduced (SomeExpr sym) (SymState sym a)
+    | ValueComputationHaltedState (SymState sym a)
 
 data SymState sym a = SymState
     { env :: Map VarName (VarBinding sym),

@@ -10,7 +10,7 @@ import Data.Maybe (mapMaybe)
 import Data.Map (Map)  
 import qualified Data.Map as Map
 
-import {-# SOURCE #-} EvalExpr (evalExpr, bindBranches, coerceArrayOnAssignment, coerceOnAssignment)
+import {-# SOURCE #-} EvalExpr (evalExpr, bindBranches, bindValueOutcomes, coerceArrayOnAssignment, coerceOnAssignment)
 
 extractProcedureDef :: ProgramUnit a -> Maybe (String, ProcedureDef a) 
 extractProcedureDef programUnit =
@@ -63,7 +63,6 @@ extractProcedureDef programUnit =
         extractVariableName :: Expression a -> Maybe VarName
         extractVariableName expression = case expression of {ExpValue _ann _span (ValVariable name) -> Just name; _ -> Nothing}
 
-
 buildProcedureEnv :: [ProgramUnit a] -> ProcedureEnv a
 buildProcedureEnv = Map.fromList . mapMaybe extractProcedureDef
 
@@ -89,23 +88,26 @@ evalMatchedFunctionArguments ::
     -> ExecutorFlags 
     -> [(VarName, Expression a)] 
     -> SymState (ExprBuilder t st fs) a 
-    -> IO [([(VarName, SomeExpr (ExprBuilder t st fs))], SymState (ExprBuilder t st fs) a)]
+    -> IO [(Maybe [(VarName, SomeExpr (ExprBuilder t st fs))], SymState (ExprBuilder t st fs) a)]
 evalMatchedFunctionArguments sym flags matchedArguments initialState =
     go matchedArguments initialState
     where
         go args state = case args of
-            [] -> pure [([], state)]
+            [] -> pure [(Just [], state)]
 
             (parameterName, expression) : remainingArguments ->
-                bindBranches
+                bindValueOutcomes
                     (evalExpr sym flags expression state)
                     (\(value, state1) ->
                         bindBranches
                             (go remainingArguments state1)
-                            (\(remainingValues, state2) ->
-                                pure [ ( (parameterName, value) : remainingValues, state2 ) ]
+                            (\(maybeRemainingValues, state2) ->
+                                case maybeRemainingValues of
+                                    Nothing -> pure [(Nothing, state2)]
+                                    Just remainingValues -> pure [(Just ((parameterName, value) : remainingValues), state2)]
                             )
                     )
+                    (\haltedState -> pure [(Nothing, haltedState)])
 
 -- subroutines may pass uninitialised variables inside and assign to them inside the call
 -- thus we need to wrap evaluated expressions inside Maybe
@@ -114,12 +116,12 @@ evalMatchedSubroutineArguments ::
     -> ExecutorFlags
     -> [(VarName, Expression a)]
     -> SymState (ExprBuilder t st fs) a
-    -> IO [([(VarName, Maybe (SomeExpr (ExprBuilder t st fs)))], SymState (ExprBuilder t st fs) a)]
+    -> IO [(Maybe [(VarName, Maybe (SomeExpr (ExprBuilder t st fs)))], SymState (ExprBuilder t st fs) a)]
 evalMatchedSubroutineArguments sym flags matchedArguments initialState =
     go matchedArguments initialState
     where
         go args state = case args of
-            [] -> pure [([], state)]
+            [] -> pure [(Just [], state)]
 
             (parameterName, expression) : remainingArguments ->
                 case expression of
@@ -129,23 +131,28 @@ evalMatchedSubroutineArguments sym flags matchedArguments initialState =
                                 Nothing -> error $ "Subroutine argument is not declared: " ++ argumentName
                                 Just binding -> pure (varValue binding)
 
-                        remainingBranches <- go remainingArguments state
-
-                        pure
-                            [ ((parameterName, argumentValue) : remainingValues, state1)
-                            | (remainingValues, state1) <- remainingBranches
-                            ]
+                        bindBranches
+                            (go remainingArguments state)
+                            (\(maybeRemainingValues, state1) ->
+                                case maybeRemainingValues of
+                                    Nothing -> pure [(Nothing, state1)]
+                                    Just remainingValues ->
+                                        pure [(Just ((parameterName, argumentValue) : remainingValues), state1)]
+                            )
 
                     _ ->
-                        bindBranches
+                        bindValueOutcomes
                             (evalExpr sym flags expression state)
                             (\(value, state1) ->
                                 bindBranches
                                     (go remainingArguments state1)
-                                    (\(remainingValues, state2) ->
-                                        pure [ ( (parameterName, Just value) : remainingValues, state2 ) ]
+                                    (\(maybeRemainingValues, state2) ->
+                                        case maybeRemainingValues of
+                                            Nothing -> pure [(Nothing, state2)]
+                                            Just remainingValues -> pure [(Just ((parameterName, Just value) : remainingValues), state2)]
                                     )
                             )
+                            (\haltedState -> pure [(Nothing, haltedState)])
 
 
 argumentToExpr :: Argument a -> Expression a
@@ -211,39 +218,41 @@ matchProcedureArguments parameterNames arguments = do
 
 
 --after declaration blocks, bind input values to their corrosponding variable bindings in local scope
-bindFunctionParameters :: IsSymExprBuilder sym 
-    => sym 
+bindFunctionParameters :: ExprBuilder t st fs
     -> ExecutorFlags 
-    -> [(VarName, SomeExpr sym)] 
-    -> SymState sym a 
-    -> IO (SymState sym a)
+    -> [(VarName, SomeExpr (ExprBuilder t st fs))]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [SymState (ExprBuilder t st fs) a]
 bindFunctionParameters sym flags argumentValues initialState =
     go initialState argumentValues
     where
         go state argPairs = case argPairs of
-            [] -> pure state
+            [] -> pure [state]
             (parameterName, argumentValue) : rest -> do
                 case Map.lookup parameterName (env state) of
                     Nothing -> error $ "Function parameter is not declared: " ++ parameterName
-                    Just binding -> do
-                        (boundValue, state1) <- coerceParameterValue sym flags binding argumentValue state
-                        let updatedBinding = binding { varValue = Just boundValue }
-                            state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
-                        go state2 rest
+                    Just binding ->
+                        bindValueOutcomes
+                            (coerceParameterValue sym flags binding argumentValue state)
+                            (\(boundValue, state1) ->
+                                let updatedBinding = binding { varValue = Just boundValue }
+                                    state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
+                                in go state2 rest
+                            )
+                            (\haltedState -> pure [haltedState])
 
 
 --now this also takes Maybe (SomeExpr sym)
-bindSubroutineParameters :: IsSymExprBuilder sym 
-    => sym 
+bindSubroutineParameters :: ExprBuilder t st fs
     -> ExecutorFlags 
-    -> [(VarName, Maybe (SomeExpr sym))] 
-    -> SymState sym a 
-    -> IO (SymState sym a)
+    -> [(VarName, Maybe (SomeExpr (ExprBuilder t st fs)))]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [SymState (ExprBuilder t st fs) a]
 bindSubroutineParameters sym flags argumentValues initialState =
     go initialState argumentValues
     where
         go state argPairs = case argPairs of
-            [] -> pure state
+            [] -> pure [state]
             (parameterName, maybeArgumentValue) : rest -> do
                 case Map.lookup parameterName (env state) of
                     Nothing -> error $ "Function parameter is not declared: " ++ parameterName
@@ -254,15 +263,18 @@ bindSubroutineParameters sym flags argumentValues initialState =
                                     state1 = state { env = Map.insert parameterName updatedBinding (env state) }
                                 go state1 rest
 
-                            Just argumentValue -> do
-                                (boundValue, state1) <- coerceParameterValue sym flags binding argumentValue state
-
-                                let updatedBinding = binding { varValue = Just boundValue }
-                                    state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
-                                go state2 rest
+                            Just argumentValue ->
+                                bindValueOutcomes
+                                    (coerceParameterValue sym flags binding argumentValue state)
+                                    (\(boundValue, state1) ->
+                                        let updatedBinding = binding { varValue = Just boundValue }
+                                            state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
+                                        in go state2 rest
+                                    )
+                                    (\haltedState -> pure [haltedState])
                         
 
-coerceParameterValue :: IsSymExprBuilder sym => sym -> ExecutorFlags -> VarBinding sym -> SomeExpr sym -> SymState sym a -> IO (SomeExpr sym, SymState sym a)
+coerceParameterValue :: ExprBuilder t st fs -> ExecutorFlags -> VarBinding (ExprBuilder t st fs) -> SomeExpr (ExprBuilder t st fs) -> SymState (ExprBuilder t st fs) a -> IO [ValueOutcome (ExprBuilder t st fs) a]
 coerceParameterValue sym flags binding argumentValue state =
     case (varType binding, argumentValue) of
         -- Array parameter with array argument
@@ -292,7 +304,6 @@ coerceParameterValue sym flags binding argumentValue state =
         -- Scalar parameter with scalar argument
         _ -> do
             coercedValue <- coerceOnAssignment sym (varType binding) argumentValue
-            pure (coercedValue, state)
+            pure [ValueAndStateProduced coercedValue state]
 
 
-            
