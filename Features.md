@@ -138,8 +138,9 @@ The following constructor features are not currently supported:
 
 ### LOOPS
 
-- Do while with integer initial, limit and increment, loop max in flags
+- Do with integer initial, limit and increment, loop max in flags
 - IncrementStepNonZero obligation
+- Do while
 - No names right now
 
 
@@ -161,7 +162,6 @@ The following constructor features are not currently supported:
 - Modules
 - Derived types
 - Character and complex types
-- Loops
 - `select case`
 - General intrinsic functions
 - Formatted input and output
