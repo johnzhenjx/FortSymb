@@ -49,6 +49,7 @@ library
     bytestring,
     containers,
     fortran-src,
+    optparse-applicative,
     parameterized-utils,
     prettyprinter,
     what4
@@ -72,6 +73,7 @@ executable FortSymb-exe
     bytestring,
     containers,
     fortran-src,
+    optparse-applicative,
     parameterized-utils,
     prettyprinter,
     what4
@@ -96,6 +98,7 @@ test-suite FortSymb-test
     bytestring,
     containers,
     fortran-src,
+    optparse-applicative,
     parameterized-utils,
     prettyprinter,
     what4

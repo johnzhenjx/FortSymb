@@ -1,10 +1,11 @@
+{-# LANGUAGE ApplicativeDo #-}
+
 module Main (main) where
 
 import qualified Data.ByteString.Char8 as B
 
-import qualified Data.Map as Map
 
-import Language.Fortran.Parser
+import Language.Fortran.Parser hiding (Parser)
 import Language.Fortran.Version
 
 import What4.Interface
@@ -27,9 +28,54 @@ import Executor
 import Data.Char (isSpace)
 import Data.List (dropWhileEnd, stripPrefix)
 
+import Options.Applicative
+import qualified Data.Map as Map
 
 
 
+parseCliOptions :: Parser (FilePath, ExecutorFlags)
+parseCliOptions = do
+    filePath <- argument str (metavar "FILE" <> help "Path of Fortran source file")
+    flags <- parseExecutorFlags
+    pure (filePath, flags)
+
+parseExecutorFlags :: Parser ExecutorFlags
+parseExecutorFlags = do
+    obFlags <- parseObligationFlags
+    maxUnroll <- option auto 
+                    ( long "max-unroll" <> metavar "N" <> value 10 <> showDefault 
+                      <> help "Maximum number of DO-loop unrollings"
+                    )
+    pure ExecutorFlags { obligationFlags = obFlags, maxDoLoopUnroll = maxUnroll }
+
+parseObligationFlags :: Parser (Map.Map ObligationKind Bool) 
+parseObligationFlags = do
+    userAssertionsEnabled <- flag True False
+        ( long "no-user-asserts" <> help "Disable proof obligations generated from user assertions" )
+    divByZeroEnabled <- flag True False
+        ( long "no-div-zero" <> help "Disable division-by-zero proof obligations" )
+    arrayBoundsEnabled <- flag True False
+        ( long "no-array-bounds" <> help "Disable array-bounds proof obligations" )
+    arrayShapeEnabled <- flag True False 
+        ( long "no-array-shape" <> help "Disable array-shape proof obligations" )
+    incrementStepNonZeroEnabled <- flag True False 
+        ( long "no-increment-step" <> help "Disable DO-loop increment-step non-zero proof obligations" )
+
+    pure $ Map.fromList
+            [ (UserAssertions, userAssertionsEnabled)
+            , (DivByZero, divByZeroEnabled)
+            , (ArrayBounds, arrayBoundsEnabled)
+            , (ArrayShape, arrayShapeEnabled)
+            , (IncrementStepNonZero, incrementStepNonZeroEnabled)
+            ]
+
+
+cliOptionsInfo :: ParserInfo (FilePath, ExecutorFlags)
+cliOptionsInfo = info (parseCliOptions <**> helper)
+        ( fullDesc
+        <> progDesc "Symbolic executor for Fortran programs"
+        <> header "FortSymb"
+        )
 
 
 -- !@assert [predicate]
@@ -59,12 +105,12 @@ preprocessAssertions source =
 
 main :: IO ()
 main = do
-    let filename = "test1.f90"
-    contents <- B.readFile filename
-
+    (filePath, flags) <- execParser cliOptionsInfo
+    
+    contents <- B.readFile filePath
     let transformedSource = B.pack (preprocessAssertions (B.unpack contents))
 
-    case byVer Fortran90 filename transformedSource of
+    case byVer Fortran90 filePath transformedSource of
         Left err -> do
             putStrLn "Parse error:"
             print err
@@ -73,26 +119,18 @@ main = do
             putStrLn "Parsed successfully!"
             print ast
 
-            Some nonceGen <- newIONonceGenerator
-            sym <- newExprBuilder FloatRealRepr EmptyExprBuilderState nonceGen
-            extendConfig z3Options (getConfiguration sym)
+            --changed from Some nonceGen <- newIONonceGenerator due to new {-# LANGUAGE ApplicativeDo #-}
+            someNonceGen <- newIONonceGenerator
+            case someNonceGen of
+                Some nonceGen -> do
+                    sym <- newExprBuilder FloatRealRepr EmptyExprBuilderState nonceGen
+                    extendConfig z3Options (getConfiguration sym)
 
-            let flags = ExecutorFlags {
-                obligationFlags = Map.fromList
-                    [ (UserAssertions, True)
-                    , (DivByZero, True)
-                    , (ArrayBounds, True)
-                    , (ArrayShape, True)
-                    , (IncrementStepNonZero, True)
-                    ]
-              , maxDoLoopUnroll = 5
-            }
+                    allStates <- execProgramFile sym flags ast
+                    printStates allStates
 
-            allStates <- execProgramFile sym flags ast
-            printStates allStates
+                    feasibleStates <- keepFeasibleStates sym allStates
+                    printStates feasibleStates
 
-            feasibleStates <- keepFeasibleStates sym allStates
-            printStates feasibleStates
-
-            obligationResults <- evaluateAllStateObligations sym feasibleStates
-            printAllObligationResults obligationResults
+                    obligationResults <- evaluateAllStateObligations sym feasibleStates
+                    printAllObligationResults obligationResults

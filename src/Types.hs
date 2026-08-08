@@ -136,4 +136,3 @@ data ObligationResult
     = ObligationValid
     | ObligationInvalid Counterexample
     deriving (Show)
-
