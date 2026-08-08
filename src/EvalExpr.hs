@@ -83,8 +83,7 @@ evalExpr :: ExprBuilder t st fs
 
 evalExpr sym flags expr state = 
     case expr of
-        ExpValue _ann _span val ->
-            fmap (\(value, state1) -> ValueAndStateProduced value state1) <$> evalValue sym val state
+        ExpValue _ann _span val -> evalValue sym flags val state
         ExpBinary _ann _span op e1 e2 ->  --assumes left to right evaluation
             bindValueOutcomes
                 (evalExpr sym flags e1 state)
@@ -114,65 +113,30 @@ evalExpr sym flags expr state =
 
 
 
-
-
-
-
-
-evalArraySubscript :: 
-    ExprBuilder t st fs
-    -> ExecutorFlags 
-    -> Expression a 
-    -> [Index a] 
-    -> SymState (ExprBuilder t st fs) a 
+evalValue :: ExprBuilder t st fs
+    -> ExecutorFlags
+    -> Value a
+    -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
 
-evalArraySubscript sym flags baseExpr indicesExprs state = do
-    arrayExpr <-
-        case baseExpr of
-            ExpValue _ann _span (ValVariable name) ->
-                case Map.lookup name (env state) of
-                    Just binding ->
-                        case varValue binding of
-                            Just value -> pure value
-                            Nothing -> error $ "(wtf): " ++ name
-                    Nothing -> error $ "Unknown array variable: " ++ name
-            _ ->
-                error "Unsupported array base expression"
-
-    indexResults <- evalArrayIndices sym flags indicesExprs state
-    concat <$> mapM
-        (\(maybeIndices, state1) ->
-            case maybeIndices of
-                Nothing -> pure [ValueComputationHaltedState state1]
-                Just indices -> lookupSomeArray sym flags arrayExpr indices state1
-        )
-        indexResults
-
-
-
-evalValue :: IsSymExprBuilder sym
-    => sym
-    -> Value a
-    -> SymState sym a
-    -> IO [(SomeExpr sym, SymState sym a)]
-
-evalValue sym val state = 
+evalValue sym _flags val state =
     case val of
         ValVariable name ->
             case Map.lookup name (env state) of
                 Nothing -> error ("Variable not declared: " ++ name)
-                Just (VarBinding _ Nothing) -> error ("Variable used before initialisation: " ++ name)
-                Just (VarBinding _ (Just e)) -> pure [(e, state)]
+                Just (VarBinding _ Nothing) -> do
+                    haltedState <- addObligationAndAssume sym UninitialisedRead (falsePred sym) state
+                    pure [ValueComputationHaltedState haltedState]
+                Just (VarBinding _ (Just e)) -> pure [ValueAndStateProduced e state]
         ValInteger nStr _kind -> do
             e <- intLit sym (read nStr :: Integer)
-            pure [(SomeInt e, state)]
+            pure [ValueAndStateProduced (SomeInt e) state]
         ValReal rLit _kind -> do
             e <- realLit sym (realAstLitToRational rLit)
-            pure [(SomeReal e, state)]
+            pure [ValueAndStateProduced (SomeReal e) state]
         ValLogical b _kind ->
-            if b then pure [(SomeBool (truePred sym), state)]
-                else pure [(SomeBool (falsePred sym), state)]
+            if b then pure [ValueAndStateProduced (SomeBool (truePred sym)) state]
+                else pure [ValueAndStateProduced (SomeBool (falsePred sym)) state]
         _ ->
             error "Unsupported expression in Fortran subset"
 
@@ -206,7 +170,7 @@ evalBinary :: ExprBuilder t st fs
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
 
-evalBinary sym flags op v1 v2 state =
+evalBinary sym _flags op v1 v2 state =
     case op of
         Addition -> do
             (v1p, v2p) <- promoteNumeric sym v1 v2
@@ -242,12 +206,9 @@ evalBinary sym flags op v1 v2 state =
             (v1p, v2p) <- promoteNumeric sym v1 v2
             case (v1p, v2p) of
                 (SomeInt x, SomeInt y) -> do
-                    newState <-
-                        if isObligationEnabled flags DivByZero then do
-                            zero <- intLit sym 0
-                            nonZero <- notPred sym =<< intEq sym y zero
-                            addObligationAndAssume sym DivByZero nonZero state
-                        else pure state
+                    zero <- intLit sym 0
+                    nonZero <- notPred sym =<< intEq sym y zero
+                    newState <- addObligationAndAssume sym DivByZero nonZero state
                     case executionStatus newState of
                         ExecutionHalted _ ->
                             pure [ValueComputationHaltedState newState]
@@ -256,12 +217,9 @@ evalBinary sym flags op v1 v2 state =
                             pure [ValueAndStateProduced (SomeInt z) newState]
 
                 (SomeReal x, SomeReal y) -> do
-                    newState <-
-                        if isObligationEnabled flags DivByZero then do
-                            zero <- realLit sym 0
-                            nonZero <- realNe sym y zero
-                            addObligationAndAssume sym DivByZero nonZero state
-                        else pure state
+                    zero <- realLit sym 0
+                    nonZero <- realNe sym y zero
+                    newState <- addObligationAndAssume sym DivByZero nonZero state
                     case executionStatus newState of
                         ExecutionHalted _ ->
                             pure [ValueComputationHaltedState newState]
@@ -444,7 +402,7 @@ coerceArrayOnAssignment :: ExprBuilder t st fs
     -> SomeExpr (ExprBuilder t st fs)
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
-coerceArrayOnAssignment sym flags targetArray sourceValue state =
+coerceArrayOnAssignment sym _flags targetArray sourceValue state =
     case (targetArray, sourceValue) of
         (SomeIntArray targetRecord, SomeIntArray sourceRecord) ->
             copyArray (SomeIntArray sourceRecord) (arrayDimensions targetRecord) (arrayDimensions sourceRecord)
@@ -458,10 +416,7 @@ coerceArrayOnAssignment sym flags targetArray sourceValue state =
     where
         copyArray sourceArray targetDims sourceDims = do
             shapePredicate <- arrayShapesEqual sym targetDims sourceDims
-            state1 <-
-                if isObligationEnabled flags ArrayShape
-                    then addObligationAndAssume sym ArrayShape shapePredicate state
-                    else pure state
+            state1 <- addObligationAndAssume sym ArrayShape shapePredicate state
             case executionStatus state1 of
                 ExecutionHalted _ -> pure [ValueComputationHaltedState state1]
                 ExecutionComplete -> pure [ValueAndStateProduced sourceArray state1]
@@ -482,3 +437,33 @@ coerceArrayOnAssignment sym flags targetArray sourceValue state =
                 _ -> pure (falsePred sym)
 
             
+
+evalArraySubscript ::
+    ExprBuilder t st fs
+    -> ExecutorFlags
+    -> Expression a
+    -> [Index a]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [ValueOutcome (ExprBuilder t st fs) a]
+
+evalArraySubscript sym flags baseExpr indicesExprs state = do
+    arrayExpr <-
+        case baseExpr of
+            ExpValue _ann _span (ValVariable name) ->
+                case Map.lookup name (env state) of
+                    Just binding ->
+                        case varValue binding of
+                            Just value -> pure value
+                            Nothing -> error $ "(wtf): " ++ name
+                    Nothing -> error $ "Unknown array variable: " ++ name
+            _ ->
+                error "Unsupported array base expression"
+
+    indexResults <- evalArrayIndices sym flags indicesExprs state
+    concat <$> mapM
+        (\(maybeIndices, state1) ->
+            case maybeIndices of
+                Nothing -> pure [ValueComputationHaltedState state1]
+                Just indices -> lookupSomeArray sym flags arrayExpr indices state1
+        )
+        indexResults

@@ -29,7 +29,6 @@ import Data.Char (isSpace)
 import Data.List (dropWhileEnd, stripPrefix)
 
 import Options.Applicative
-import qualified Data.Map as Map
 
 
 
@@ -41,33 +40,14 @@ parseCliOptions = do
 
 parseExecutorFlags :: Parser ExecutorFlags
 parseExecutorFlags = do
-    obFlags <- parseObligationFlags
-    maxUnroll <- option auto 
-                    ( long "max-unroll" <> metavar "N" <> value 10 <> showDefault 
-                      <> help "Maximum number of DO-loop unrollings"
-                    )
-    pure ExecutorFlags { obligationFlags = obFlags, maxDoLoopUnroll = maxUnroll }
-
-parseObligationFlags :: Parser (Map.Map ObligationKind Bool) 
-parseObligationFlags = do
-    userAssertionsEnabled <- flag True False
+    assertionsEnabled <- flag True False
         ( long "no-user-asserts" <> help "Disable proof obligations generated from user assertions" )
-    divByZeroEnabled <- flag True False
-        ( long "no-div-zero" <> help "Disable division-by-zero proof obligations" )
-    arrayBoundsEnabled <- flag True False
-        ( long "no-array-bounds" <> help "Disable array-bounds proof obligations" )
-    arrayShapeEnabled <- flag True False 
-        ( long "no-array-shape" <> help "Disable array-shape proof obligations" )
-    incrementStepNonZeroEnabled <- flag True False 
-        ( long "no-increment-step" <> help "Disable DO-loop increment-step non-zero proof obligations" )
-
-    pure $ Map.fromList
-            [ (UserAssertions, userAssertionsEnabled)
-            , (DivByZero, divByZeroEnabled)
-            , (ArrayBounds, arrayBoundsEnabled)
-            , (ArrayShape, arrayShapeEnabled)
-            , (IncrementStepNonZero, incrementStepNonZeroEnabled)
-            ]
+    maxUnroll <- option auto 
+        ( long "max-unroll" <> metavar "N" <> value 10 <> showDefault <> help "Maximum number of DO-loop unrollings" )
+    pure ExecutorFlags
+        { userAssertionsEnabled = assertionsEnabled
+        , maxDoLoopUnroll = maxUnroll
+        }
 
 
 cliOptionsInfo :: ParserInfo (FilePath, ExecutorFlags)

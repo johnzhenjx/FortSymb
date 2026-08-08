@@ -69,12 +69,12 @@ data ProcedureDef a
 type ProcedureEnv a = Map String (ProcedureDef a)
 
 
-data ObligationKind = UserAssertions | DivByZero | ArrayBounds | ArrayShape | IncrementStepNonZero
+data ObligationKind = UserAssertions | DivByZero | ArrayBounds | ArrayShape | IncrementStepNonZero | UninitialisedRead
     deriving (Eq, Ord, Show)
 
 data ExecutorFlags = ExecutorFlags 
     {
-        obligationFlags :: Map ObligationKind Bool,
+        userAssertionsEnabled :: Bool,
         maxDoLoopUnroll :: Int
     }
         
@@ -113,10 +113,6 @@ data SymState sym a = SymState
       procedureEnv :: ProcedureEnv a,
       executionStatus :: ExecutionStatus 
     }
-
-
-isObligationEnabled :: ExecutorFlags -> ObligationKind -> Bool
-isObligationEnabled flags kind = Map.findWithDefault False kind (obligationFlags flags)
 
 
 emptyState :: ProcedureEnv a -> SymState sym a

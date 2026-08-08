@@ -377,7 +377,7 @@ createArrayFromConstructor ::
 
 createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
     initialArray <- createUninitialisedArray sym name declaredType dimensions
-    stateWithShapeCheck <- addConstructorShapeObligation sym flags dimensions (length elementExprs) state
+    stateWithShapeCheck <- addConstructorShapeObligation sym dimensions (length elementExprs) state
     -- ^ checks if the length of initialisation array matches the number of elements in declared array
     case executionStatus stateWithShapeCheck of
         ExecutionHalted _ -> pure [ValueComputationHaltedState stateWithShapeCheck]
@@ -404,16 +404,13 @@ createArrayFromConstructor sym flags name declaredType dimensions elementExprs s
                         (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
 
-        addConstructorShapeObligation sym flags dimensions constructorLength state
-            | not (isObligationEnabled flags ArrayShape) = pure state
-            | otherwise = do
-                extents <- mapM (dimensionExtent sym) dimensions
-                one <- intLit sym 1
-                arraySize <- foldM (intMul sym) one extents
-                suppliedSize <- intLit sym (toInteger constructorLength)
-                shapeMatches <- isEq sym arraySize suppliedSize
-                
-                addObligationAndAssume sym ArrayShape shapeMatches state
+        addConstructorShapeObligation sym dimensions constructorLength state = do
+            extents <- mapM (dimensionExtent sym) dimensions
+            one <- intLit sym 1
+            arraySize <- foldM (intMul sym) one extents
+            suppliedSize <- intLit sym (toInteger constructorLength)
+            shapeMatches <- isEq sym arraySize suppliedSize
+            addObligationAndAssume sym ArrayShape shapeMatches state
 
 
 --using normal index lists
@@ -423,30 +420,62 @@ lookupSomeArray :: ExprBuilder t st fs
     -> [SymExpr (ExprBuilder t st fs) BaseIntegerType]
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
-lookupSomeArray sym flags arrayExpr indices state =
+lookupSomeArray sym _flags arrayExpr indices state =
     case arrayExpr of
-        SomeIntArray arrayRecord -> lookupArray sym flags indices SomeInt arrayRecord state
-        SomeRealArray arrayRecord -> lookupArray sym flags indices SomeReal arrayRecord state
-        SomeBoolArray arrayRecord -> lookupArray sym flags indices SomeBool arrayRecord state
+        SomeIntArray arrayRecord -> lookupArray sym indices SomeInt arrayRecord state
+        SomeRealArray arrayRecord -> lookupArray sym indices SomeReal arrayRecord state
+        SomeBoolArray arrayRecord -> lookupArray sym indices SomeBool arrayRecord state
         _ ->
             error "lookupSomeArray: expression is not an array (or unaccepted array)"
     --weirdly, i get type error on SomeInt if i dont including sym, flags, indices and state into params for lookupArray -- will have to ask Nikolaus
     where
-        lookupArray sym flags indices wrap arrayRecord state = do
-            newState <-
-                if isObligationEnabled flags ArrayBounds
-                    then do
-                        inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices
-                        addObligationAndAssume sym ArrayBounds inBoundsPred state
-
-                    else pure state
+        lookupArray sym indices wrap arrayRecord state = do
+            inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices
+            newState <- addObligationAndAssume sym ArrayBounds inBoundsPred state
 
             case executionStatus newState of
                 ExecutionHalted _ -> pure [ValueComputationHaltedState newState]
                 ExecutionComplete -> do
                     flatIndex <- flattenArrayIndices sym (arrayDimensions arrayRecord) indices
-                    value <- arrayLookup sym (arrayContents arrayRecord) (Ctx.singleton flatIndex)
-                    pure [ValueAndStateProduced (wrap value) newState]
+                    initialisedPred <-
+                        arrayLookup sym (arrayInitMask arrayRecord) (Ctx.singleton flatIndex)
+                    -- Unlike other guarded operations, initialisation can differ
+                    -- within one symbolic state, so preserve both feasible subsets.
+                    let obligation = Obligation
+                            { obligationKind = UninitialisedRead
+                            , obligationPredicate = initialisedPred
+                            , obligationPath = pathCond newState
+                            }
+                        stateWithObligation = newState
+                            { obligations = obligation : obligations newState }
+
+                    maybeInitialisedState <-
+                        addPathConditionAndKeepIfFeasible
+                            sym initialisedPred stateWithObligation
+                    uninitialisedPred <- notPred sym initialisedPred
+                    maybeUninitialisedState <-
+                        addPathConditionAndKeepIfFeasible
+                            sym uninitialisedPred stateWithObligation
+
+                    successfulOutcomes <-
+                        case maybeInitialisedState of
+                            Nothing -> pure []
+                            Just initialisedState -> do
+                                value <- arrayLookup sym (arrayContents arrayRecord) (Ctx.singleton flatIndex)
+                                pure [ValueAndStateProduced (wrap value) initialisedState]
+
+                    let haltedOutcomes =
+                            case maybeUninitialisedState of
+                                Nothing -> []
+                                Just uninitialisedState ->
+                                    [ ValueComputationHaltedState
+                                        uninitialisedState
+                                            { executionStatus =
+                                                ExecutionHalted
+                                                    (ObligationCannotHold UninitialisedRead)
+                                            }
+                                    ]
+                    pure (successfulOutcomes ++ haltedOutcomes)
 
 
 
@@ -457,12 +486,12 @@ updateSomeArray :: ExprBuilder t st fs
     -> SomeExpr (ExprBuilder t st fs)
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
-updateSomeArray sym flags arrayExpr indices newValue state =
+updateSomeArray sym _flags arrayExpr indices newValue state =
     case (arrayExpr, newValue) of
-        (SomeIntArray arrayRecord, SomeInt value) -> updateArray sym flags indices SomeIntArray arrayRecord value state
-        (SomeRealArray arrayRecord, SomeReal value) -> updateArray sym flags indices SomeRealArray arrayRecord value state 
+        (SomeIntArray arrayRecord, SomeInt value) -> updateArray sym indices SomeIntArray arrayRecord value state
+        (SomeRealArray arrayRecord, SomeReal value) -> updateArray sym indices SomeRealArray arrayRecord value state
             --same type error problem as above
-        (SomeBoolArray arrayRecord, SomeBool value) -> updateArray sym flags indices SomeBoolArray arrayRecord value state
+        (SomeBoolArray arrayRecord, SomeBool value) -> updateArray sym indices SomeBoolArray arrayRecord value state
 
         (SomeIntArray {}, _) -> error "updateSomeArray: expected an integer value"
         (SomeRealArray {}, _) -> error "updateSomeArray: expected a real value"
@@ -470,14 +499,9 @@ updateSomeArray sym flags arrayExpr indices newValue state =
 
         _ -> error "updateSomeArray: expression is not an array"
     where
-        updateArray sym flags indices wrap arrayRecord value state = do
-            newState <-
-                if isObligationEnabled flags ArrayBounds
-                    then do
-                        inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices
-                        addObligationAndAssume sym ArrayBounds inBoundsPred state
-
-                    else pure state
+        updateArray sym indices wrap arrayRecord value state = do
+            inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices
+            newState <- addObligationAndAssume sym ArrayBounds inBoundsPred state
 
             case executionStatus newState of
                 ExecutionHalted _ -> pure [ValueComputationHaltedState newState]

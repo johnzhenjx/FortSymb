@@ -209,9 +209,7 @@ execDoBlock sym flags span maybeName maybeSpec body state =
         addIncrementStepNonZeroObligation sym increment state = do
             zero <- intLit sym 0
             incrementIsNonZero <- notPred sym =<< intEq sym increment zero
-            if isObligationEnabled flags IncrementStepNonZero
-                then addObligationAndAssume sym IncrementStepNonZero incrementIsNonZero state
-                else pure state
+            addObligationAndAssume sym IncrementStepNonZero incrementIsNonZero state
 
 
         runDoLoop
@@ -948,7 +946,7 @@ execAssertionExpr sym flags assertionExpr state =
             case assertionValue of
                 SomeBool predicate -> do
                     stateAfterCheck <-
-                        if isObligationEnabled flags UserAssertions
+                        if userAssertionsEnabled flags
                             then addObligationAndAssume sym UserAssertions predicate newState
                             else pure newState
                     pure [stateAfterCheck]
