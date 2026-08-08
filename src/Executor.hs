@@ -124,6 +124,17 @@ execBlock sym flags block state =
             _maybeEndDo ->
                 execDoBlock sym flags span maybeName maybeSpec body state
 
+        BlDoWhile
+            _ann
+            span
+            _label
+            maybeName
+            _terminationLabel
+            condition
+            body
+            _maybeEndDo ->
+                execDoWhileBlock sym flags span maybeName condition body state
+
 
 
         BlComment _ann _span _comment -> pure [state]
@@ -310,6 +321,84 @@ execDoBlock sym flags span maybeName maybeSpec body state =
             continueNegative <- andPred sym incrementNegative withinNegativeLimit
 
             orPred sym continuePositive continueNegative
+
+
+execDoWhileBlock ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    SrcSpan ->
+    Maybe String ->
+    Expression a ->
+    [Block a] ->
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
+execDoWhileBlock sym flags span maybeName condition body state =
+    runDoWhileLoop sym flags span 0 maybeName condition body state
+
+
+runDoWhileLoop ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    SrcSpan ->
+    Int ->
+    Maybe String ->
+    Expression a ->
+    [Block a] ->
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
+runDoWhileLoop sym flags span unrollCount maybeName condition body state =
+    bindValueOutcomes
+        (evalExpr sym flags condition state)
+        (\(conditionValue, state1) ->
+            case conditionValue of
+                SomeBool conditionPredicate -> do
+                    exitPredicate <- notPred sym conditionPredicate
+                    maybeContinueState <- addPathConditionAndKeepIfFeasible sym conditionPredicate state1
+                    maybeExitState <- addPathConditionAndKeepIfFeasible sym exitPredicate state1
+
+                    continuingStates <-
+                        case maybeContinueState of
+                            Nothing -> pure []
+                            Just continueState
+                                | unrollCount >= maxDoLoopUnroll flags ->
+                                    pure
+                                        [ continueState
+                                            { executionStatus =
+                                                ExecutionHalted
+                                                    LoopUnrollLimitReached
+                                                        { incompleteLoopSpan = span
+                                                        , incompleteUnrollCount = unrollCount
+                                                        }
+                                            }
+                                        ]
+                                | otherwise ->
+                                    bindBranches
+                                        (execBlocks sym flags body continueState)
+                                        (\bodyState ->
+                                            case executionStatus bodyState of
+                                                ExecutionHalted _ -> pure [bodyState]
+                                                ExecutionComplete ->
+                                                    runDoWhileLoop
+                                                        sym
+                                                        flags
+                                                        span
+                                                        (unrollCount + 1)
+                                                        maybeName
+                                                        condition
+                                                        body
+                                                        bodyState
+                                        )
+
+                    let exitStates =
+                            case maybeExitState of
+                                Nothing -> []
+                                Just exitState -> [exitState]
+
+                    pure (exitStates ++ continuingStates)
+
+                _ -> error "DO WHILE condition must evaluate to logical"
+        )
+        (\haltedState -> pure [haltedState])
 
 
 
