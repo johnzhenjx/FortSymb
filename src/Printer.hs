@@ -121,8 +121,8 @@ showHaltReason reason =
                     ++ show unrollCount
                     ++ " iterations"
 
-        ObligationCannotHold kind ->
-            "obligation cannot hold: " ++ show kind
+        ObligationCannotHold kind span ->
+            "obligation cannot hold: " ++ show kind ++ " at " ++ show span
 
 printStates ::
     IsExpr (SymExpr sym) =>
@@ -231,6 +231,8 @@ printObligations obligationsToPrint = do
                 ++ show index
                 ++ ". "
                 ++ show (obligationKind obligation)
+                ++ " at "
+                ++ show (obligationSpan obligation)
 
         putStrLn $
             "    Predicate: "
@@ -317,6 +319,8 @@ printObligationResult
                 ++ show obligationNumber
                 ++ ". "
                 ++ show (obligationKind obligation)
+                ++ " at "
+                ++ show (obligationSpan obligation)
                 ++ ": "
                 ++ showObligationResult result
 

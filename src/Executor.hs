@@ -179,7 +179,7 @@ execDoBlock sym flags span maybeName maybeSpec body state =
                                 (\(incrementValue, state3) ->
                                     case (initialValue, limitValue, incrementValue) of
                                             ( SomeInt initialInt, SomeInt limitInt, SomeInt incrementInt ) -> do
-                                                state4 <- addIncrementStepNonZeroObligation sym incrementInt state3
+                                                state4 <- addIncrementStepNonZeroObligation sym span incrementInt state3
                                                 -- the increment expression’s value is fixed when the DO loop begins
                                                 case executionStatus state4 of
                                                     ExecutionHalted _ -> pure [state4]
@@ -206,10 +206,10 @@ execDoBlock sym flags span maybeName maybeSpec body state =
                 (\haltedState -> pure [haltedState])
 
     where 
-        addIncrementStepNonZeroObligation sym increment state = do
+        addIncrementStepNonZeroObligation sym obligationSpan increment state = do
             zero <- intLit sym 0
             incrementIsNonZero <- notPred sym =<< intEq sym increment zero
-            addObligationAndAssume sym IncrementStepNonZero incrementIsNonZero state
+            addObligationAndAssume sym IncrementStepNonZero obligationSpan incrementIsNonZero state
 
 
         runDoLoop
@@ -590,11 +590,12 @@ declareArrayVar sym flags typeSpec attributes name dimensionListInfo maybeInitia
                                 arrayValue <- createUninitialisedArray sym name (getVarType typeSpec) dimensions
                                 pure [state1 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state1) }]
 
-                            Just (ExpInitialisation _ann _span elementsInfo) ->
+                            Just (ExpInitialisation _ann span elementsInfo) ->
                                 bindValueOutcomes
                                     (createArrayFromConstructor
                                         sym
                                         flags
+                                        span
                                         name
                                         (getVarType typeSpec)
                                         dimensions
@@ -631,11 +632,11 @@ execAssign ::
 
 execAssign sym flags lhs rhs state =
     case lhs of
-        ExpValue _ann _span (ValVariable name) -> 
-            execVariableAssign sym flags name rhs state
+        ExpValue _ann span (ValVariable name) ->
+            execVariableAssign sym flags span name rhs state
 
-        ExpSubscript _ann _span baseExpr indicesInfo ->
-            execArrayElementAssign sym flags baseExpr (alistList indicesInfo) rhs state
+        ExpSubscript _ann span baseExpr indicesInfo ->
+            execArrayElementAssign sym flags span baseExpr (alistList indicesInfo) rhs state
 
 
         _ -> error "Left-hand side of assignment must be a variable"
@@ -644,11 +645,12 @@ execAssign sym flags lhs rhs state =
 execVariableAssign ::
     ExprBuilder t st fs ->
     ExecutorFlags ->
+    SrcSpan ->
     VarName ->
     Expression a ->
     SymState (ExprBuilder t st fs) a ->
     IO [SymState (ExprBuilder t st fs) a]
-execVariableAssign sym flags name rhs state =
+execVariableAssign sym flags span name rhs state =
     case Map.lookup name (env state) of
         Nothing ->
             error $ "Assignment to undeclared variable: " ++ name
@@ -658,7 +660,7 @@ execVariableAssign sym flags name rhs state =
                 VarArray _ _ ->
                     case varValue binding of
                         Nothing -> error $ "Assignment to unallocated array: " ++ name
-                        Just _ -> execWholeArrayAssign sym flags name binding rhs state
+                        Just _ -> execWholeArrayAssign sym flags span name binding rhs state
 
                 _ -> execScalarAssign sym flags name binding rhs state
 
@@ -686,13 +688,14 @@ execScalarAssign sym flags name binding rhs state = do
 execArrayElementAssign ::
     ExprBuilder t st fs
     -> ExecutorFlags
+    -> SrcSpan
     -> Expression a
     -> [Index a]
     -> Expression a
     -> SymState (ExprBuilder t st fs) a
     -> IO [SymState (ExprBuilder t st fs) a]
 
-execArrayElementAssign sym flags baseExpr indexExprs rhs state = do
+execArrayElementAssign sym flags span baseExpr indexExprs rhs state = do
     name <-
         case baseExpr of
             ExpValue _ann _span (ValVariable arrayName) -> pure arrayName
@@ -724,7 +727,7 @@ execArrayElementAssign sym flags baseExpr indexExprs rhs state = do
                             rhsAfterCoerce <- coerceOnAssignment sym (arrayElementType currentArray) rhsBeforeCoerce
 
                             bindValueOutcomes
-                                (updateSomeArray sym flags currentArray indices rhsAfterCoerce state2)
+                                (updateSomeArray sym flags span currentArray indices rhsAfterCoerce state2)
                                 (\(updatedArrayValue, state3) ->
                                     let updatedBinding = currentBinding { varValue = Just updatedArrayValue }
                                         finalState = state3 { env = Map.insert name updatedBinding (env state3) }
@@ -740,12 +743,13 @@ execArrayElementAssign sym flags baseExpr indexExprs rhs state = do
 execWholeArrayAssign ::
     ExprBuilder t st fs ->
     ExecutorFlags ->
+    SrcSpan ->
     VarName ->
     VarBinding (ExprBuilder t st fs) ->
     Expression a ->
     SymState (ExprBuilder t st fs) a ->
     IO [SymState (ExprBuilder t st fs) a]
-execWholeArrayAssign sym flags name binding initExpr state = do
+execWholeArrayAssign sym flags span name binding initExpr state = do
     arrayExpr <-
         case varValue binding of
             Nothing -> error $ "Assignment to uninitialised array: " ++ name
@@ -765,11 +769,12 @@ execWholeArrayAssign sym flags name binding initExpr state = do
 
     case initExpr of
         -- e.g. vec = [1, 2, 3]
-        ExpInitialisation _ann _span elementsInfo ->
+        ExpInitialisation _ann constructorSpan elementsInfo ->
             bindValueOutcomes
                 (createArrayFromConstructor
                     sym
                     flags
+                    constructorSpan
                     name
                     elementType
                     dimensions
@@ -789,17 +794,17 @@ execWholeArrayAssign sym flags name binding initExpr state = do
                         --array copy assign
                         SomeIntArray _ -> do
                             bindValueOutcomes
-                                (coerceArrayOnAssignment sym flags arrayExpr initValue state1)
+                                (coerceArrayOnAssignment sym flags span arrayExpr initValue state1)
                                 (\(arrayValue, state2) -> pure [state2 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state2) }])
                                 (\haltedState -> pure [haltedState])
                         SomeRealArray _ -> do
                             bindValueOutcomes
-                                (coerceArrayOnAssignment sym flags arrayExpr initValue state1)
+                                (coerceArrayOnAssignment sym flags span arrayExpr initValue state1)
                                 (\(arrayValue, state2) -> pure [state2 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state2) }])
                                 (\haltedState -> pure [haltedState])
                         SomeBoolArray _ -> do
                             bindValueOutcomes
-                                (coerceArrayOnAssignment sym flags arrayExpr initValue state1)
+                                (coerceArrayOnAssignment sym flags span arrayExpr initValue state1)
                                 (\(arrayValue, state2) -> pure [state2 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state2) }])
                                 (\haltedState -> pure [haltedState])
 
@@ -929,17 +934,18 @@ execAssertionArguments ::
     -> IO [SymState (ExprBuilder t st fs) a]
 execAssertionArguments sym flags arguments state =
     case arguments of
-        [Argument _ann _span Nothing (ArgExpr expr)] -> execAssertionExpr sym flags expr state
+        [Argument _ann span Nothing (ArgExpr expr)] -> execAssertionExpr sym flags span expr state
         _ ->
             error "fortsymb_assert expects exactly one argument"
 
 execAssertionExpr :: 
     ExprBuilder t st fs
     -> ExecutorFlags
+    -> SrcSpan
     -> Expression a
     -> SymState (ExprBuilder t st fs) a
     -> IO [SymState (ExprBuilder t st fs) a]
-execAssertionExpr sym flags assertionExpr state =
+execAssertionExpr sym flags span assertionExpr state =
     bindValueOutcomes
         (evalExpr sym flags assertionExpr state)
         (\(assertionValue, newState) ->
@@ -947,7 +953,7 @@ execAssertionExpr sym flags assertionExpr state =
                 SomeBool predicate -> do
                     stateAfterCheck <-
                         if userAssertionsEnabled flags
-                            then addObligationAndAssume sym UserAssertions predicate newState
+                            then addObligationAndAssume sym UserAssertions span predicate newState
                             else pure newState
                     pure [stateAfterCheck]
 
@@ -1044,7 +1050,7 @@ execFunctionDefinition ::
     -> ExecutorFlags 
     -> String 
     -> ProcedureDef a 
-    -> [(VarName, SomeExpr (ExprBuilder t st fs))] 
+    -> [(VarName, SrcSpan, SomeExpr (ExprBuilder t st fs))]
     -> SymState (ExprBuilder t st fs) a 
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
 
@@ -1185,7 +1191,7 @@ execSubroutineDefinition ::
     -> String 
     -> ProcedureDef a 
     -> [(VarName, Expression a)] 
-    -> [(VarName, Maybe (SomeExpr (ExprBuilder t st fs)))]
+    -> [(VarName, SrcSpan, Maybe (SomeExpr (ExprBuilder t st fs)))]
     -> SymState (ExprBuilder t st fs) a 
     -> IO [SymState (ExprBuilder t st fs) a]
 

@@ -15,6 +15,7 @@ import What4.Symbol
 import What4.Expr.Builder
 
 import Language.Fortran.AST
+import Language.Fortran.Util.Position (SrcSpan)
 
 import Control.Monad 
 
@@ -368,6 +369,7 @@ createConstantArray sym dimensions initialValue = do
 createArrayFromConstructor ::
     ExprBuilder t st fs
     -> ExecutorFlags
+    -> SrcSpan
     -> VarName
     -> VarType
     -> [ArrayDimension (ExprBuilder t st fs)]
@@ -375,7 +377,7 @@ createArrayFromConstructor ::
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
 
-createArrayFromConstructor sym flags name declaredType dimensions elementExprs state = do
+createArrayFromConstructor sym flags span name declaredType dimensions elementExprs state = do
     initialArray <- createUninitialisedArray sym name declaredType dimensions
     stateWithShapeCheck <- addConstructorShapeObligation sym dimensions (length elementExprs) state
     -- ^ checks if the length of initialisation array matches the number of elements in declared array
@@ -395,7 +397,7 @@ createArrayFromConstructor sym flags name declaredType dimensions elementExprs s
                             flatIndex <- intLit sym flatPosition
                             indices <- unflattenArrayIndex sym dimensions flatIndex
                             bindValueOutcomes
-                                (updateSomeArray sym flags arrayExpr indices coercedValue state1)
+                                (updateSomeArray sym flags span arrayExpr indices coercedValue state1)
                                 (\(updatedArray, state2) ->
                                     writeConstructorElements updatedArray (flatPosition + 1) remainingExprs state2
                                 )
@@ -410,28 +412,29 @@ createArrayFromConstructor sym flags name declaredType dimensions elementExprs s
             arraySize <- foldM (intMul sym) one extents
             suppliedSize <- intLit sym (toInteger constructorLength)
             shapeMatches <- isEq sym arraySize suppliedSize
-            addObligationAndAssume sym ArrayShape shapeMatches state
+            addObligationAndAssume sym ArrayShape span shapeMatches state
 
 
 --using normal index lists
 lookupSomeArray :: ExprBuilder t st fs
     -> ExecutorFlags
+    -> SrcSpan
     -> SomeExpr (ExprBuilder t st fs)
     -> [SymExpr (ExprBuilder t st fs) BaseIntegerType]
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
-lookupSomeArray sym _flags arrayExpr indices state =
+lookupSomeArray sym _flags span arrayExpr indices state =
     case arrayExpr of
-        SomeIntArray arrayRecord -> lookupArray sym indices SomeInt arrayRecord state
-        SomeRealArray arrayRecord -> lookupArray sym indices SomeReal arrayRecord state
-        SomeBoolArray arrayRecord -> lookupArray sym indices SomeBool arrayRecord state
+        SomeIntArray arrayRecord -> lookupArray sym span indices SomeInt arrayRecord state
+        SomeRealArray arrayRecord -> lookupArray sym span indices SomeReal arrayRecord state
+        SomeBoolArray arrayRecord -> lookupArray sym span indices SomeBool arrayRecord state
         _ ->
             error "lookupSomeArray: expression is not an array (or unaccepted array)"
     --weirdly, i get type error on SomeInt if i dont including sym, flags, indices and state into params for lookupArray -- will have to ask Nikolaus
     where
-        lookupArray sym indices wrap arrayRecord state = do
+        lookupArray sym span indices wrap arrayRecord state = do
             inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices
-            newState <- addObligationAndAssume sym ArrayBounds inBoundsPred state
+            newState <- addObligationAndAssume sym ArrayBounds span inBoundsPred state
 
             case executionStatus newState of
                 ExecutionHalted _ -> pure [ValueComputationHaltedState newState]
@@ -443,6 +446,7 @@ lookupSomeArray sym _flags arrayExpr indices state =
                     -- within one symbolic state, so preserve both feasible subsets.
                     let obligation = Obligation
                             { obligationKind = UninitialisedRead
+                            , obligationSpan = span
                             , obligationPredicate = initialisedPred
                             , obligationPath = pathCond newState
                             }
@@ -472,7 +476,7 @@ lookupSomeArray sym _flags arrayExpr indices state =
                                         uninitialisedState
                                             { executionStatus =
                                                 ExecutionHalted
-                                                    (ObligationCannotHold UninitialisedRead)
+                                                    (ObligationCannotHold UninitialisedRead span)
                                             }
                                     ]
                     pure (successfulOutcomes ++ haltedOutcomes)
@@ -481,17 +485,18 @@ lookupSomeArray sym _flags arrayExpr indices state =
 
 updateSomeArray :: ExprBuilder t st fs
     -> ExecutorFlags
+    -> SrcSpan
     -> SomeExpr (ExprBuilder t st fs)
     -> [SymExpr (ExprBuilder t st fs) BaseIntegerType]
     -> SomeExpr (ExprBuilder t st fs)
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
-updateSomeArray sym _flags arrayExpr indices newValue state =
+updateSomeArray sym _flags span arrayExpr indices newValue state =
     case (arrayExpr, newValue) of
-        (SomeIntArray arrayRecord, SomeInt value) -> updateArray sym indices SomeIntArray arrayRecord value state
-        (SomeRealArray arrayRecord, SomeReal value) -> updateArray sym indices SomeRealArray arrayRecord value state
+        (SomeIntArray arrayRecord, SomeInt value) -> updateArray sym span indices SomeIntArray arrayRecord value state
+        (SomeRealArray arrayRecord, SomeReal value) -> updateArray sym span indices SomeRealArray arrayRecord value state
             --same type error problem as above
-        (SomeBoolArray arrayRecord, SomeBool value) -> updateArray sym indices SomeBoolArray arrayRecord value state
+        (SomeBoolArray arrayRecord, SomeBool value) -> updateArray sym span indices SomeBoolArray arrayRecord value state
 
         (SomeIntArray {}, _) -> error "updateSomeArray: expected an integer value"
         (SomeRealArray {}, _) -> error "updateSomeArray: expected a real value"
@@ -499,9 +504,9 @@ updateSomeArray sym _flags arrayExpr indices newValue state =
 
         _ -> error "updateSomeArray: expression is not an array"
     where
-        updateArray sym indices wrap arrayRecord value state = do
+        updateArray sym span indices wrap arrayRecord value state = do
             inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices
-            newState <- addObligationAndAssume sym ArrayBounds inBoundsPred state
+            newState <- addObligationAndAssume sym ArrayBounds span inBoundsPred state
 
             case executionStatus newState of
                 ExecutionHalted _ -> pure [ValueComputationHaltedState newState]

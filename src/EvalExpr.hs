@@ -3,6 +3,7 @@ module EvalExpr where
 import qualified Data.Map as Map
 
 import Language.Fortran.AST
+import Language.Fortran.Util.Position (SrcSpan)
 import qualified Language.Fortran.AST.Literal.Real as ASTReal
 
 import What4.Interface 
@@ -83,14 +84,14 @@ evalExpr :: ExprBuilder t st fs
 
 evalExpr sym flags expr state = 
     case expr of
-        ExpValue _ann _span val -> evalValue sym flags val state
-        ExpBinary _ann _span op e1 e2 ->  --assumes left to right evaluation
+        ExpValue _ann span val -> evalValue sym flags span val state
+        ExpBinary _ann span op e1 e2 ->  --assumes left to right evaluation
             bindValueOutcomes
                 (evalExpr sym flags e1 state)
                 (\(v1, state1) ->
                     bindValueOutcomes
                         (evalExpr sym flags e2 state1)
-                        (\(v2, state2) -> evalBinary sym flags op v1 v2 state2)
+                        (\(v2, state2) -> evalBinary sym flags span op v1 v2 state2)
                         (\haltedState -> pure [ValueComputationHaltedState haltedState])
                 )
                 (\haltedState -> pure [ValueComputationHaltedState haltedState])
@@ -101,7 +102,7 @@ evalExpr sym flags expr state =
                 (\(value, state1) -> evalUnary sym flags op value state1)
                 (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
-        ExpSubscript _ann _span baseExpr indicesInfo -> evalArraySubscript sym flags baseExpr (alistList indicesInfo) state
+        ExpSubscript _ann span baseExpr indicesInfo -> evalArraySubscript sym flags span baseExpr (alistList indicesInfo) state
         -- ExpFunctionCall {} ->
         --     error "Unsupported expression: function call"
         ExpFunctionCall _ann _span functionExpr argumentsInfo ->
@@ -115,17 +116,18 @@ evalExpr sym flags expr state =
 
 evalValue :: ExprBuilder t st fs
     -> ExecutorFlags
+    -> SrcSpan
     -> Value a
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
 
-evalValue sym _flags val state =
+evalValue sym _flags span val state =
     case val of
         ValVariable name ->
             case Map.lookup name (env state) of
                 Nothing -> error ("Variable not declared: " ++ name)
                 Just (VarBinding _ Nothing) -> do
-                    haltedState <- addObligationAndAssume sym UninitialisedRead (falsePred sym) state
+                    haltedState <- addObligationAndAssume sym UninitialisedRead span (falsePred sym) state
                     pure [ValueComputationHaltedState haltedState]
                 Just (VarBinding _ (Just e)) -> pure [ValueAndStateProduced e state]
         ValInteger nStr _kind -> do
@@ -164,13 +166,14 @@ realAstLitToRational rLit =
                     
 evalBinary :: ExprBuilder t st fs
     -> ExecutorFlags
+    -> SrcSpan
     -> BinaryOp
     -> SomeExpr (ExprBuilder t st fs)
     -> SomeExpr (ExprBuilder t st fs)
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
 
-evalBinary sym _flags op v1 v2 state =
+evalBinary sym _flags span op v1 v2 state =
     case op of
         Addition -> do
             (v1p, v2p) <- promoteNumeric sym v1 v2
@@ -208,7 +211,7 @@ evalBinary sym _flags op v1 v2 state =
                 (SomeInt x, SomeInt y) -> do
                     zero <- intLit sym 0
                     nonZero <- notPred sym =<< intEq sym y zero
-                    newState <- addObligationAndAssume sym DivByZero nonZero state
+                    newState <- addObligationAndAssume sym DivByZero span nonZero state
                     case executionStatus newState of
                         ExecutionHalted _ ->
                             pure [ValueComputationHaltedState newState]
@@ -219,7 +222,7 @@ evalBinary sym _flags op v1 v2 state =
                 (SomeReal x, SomeReal y) -> do
                     zero <- realLit sym 0
                     nonZero <- realNe sym y zero
-                    newState <- addObligationAndAssume sym DivByZero nonZero state
+                    newState <- addObligationAndAssume sym DivByZero span nonZero state
                     case executionStatus newState of
                         ExecutionHalted _ ->
                             pure [ValueComputationHaltedState newState]
@@ -398,11 +401,12 @@ coerceOnAssignment sym targetType rhs =
 
 coerceArrayOnAssignment :: ExprBuilder t st fs
     -> ExecutorFlags
+    -> SrcSpan
     -> SomeExpr (ExprBuilder t st fs)
     -> SomeExpr (ExprBuilder t st fs)
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
-coerceArrayOnAssignment sym _flags targetArray sourceValue state =
+coerceArrayOnAssignment sym _flags span targetArray sourceValue state =
     case (targetArray, sourceValue) of
         (SomeIntArray targetRecord, SomeIntArray sourceRecord) ->
             copyArray (SomeIntArray sourceRecord) (arrayDimensions targetRecord) (arrayDimensions sourceRecord)
@@ -416,7 +420,7 @@ coerceArrayOnAssignment sym _flags targetArray sourceValue state =
     where
         copyArray sourceArray targetDims sourceDims = do
             shapePredicate <- arrayShapesEqual sym targetDims sourceDims
-            state1 <- addObligationAndAssume sym ArrayShape shapePredicate state
+            state1 <- addObligationAndAssume sym ArrayShape span shapePredicate state
             case executionStatus state1 of
                 ExecutionHalted _ -> pure [ValueComputationHaltedState state1]
                 ExecutionComplete -> pure [ValueAndStateProduced sourceArray state1]
@@ -441,12 +445,13 @@ coerceArrayOnAssignment sym _flags targetArray sourceValue state =
 evalArraySubscript ::
     ExprBuilder t st fs
     -> ExecutorFlags
+    -> SrcSpan
     -> Expression a
     -> [Index a]
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a]
 
-evalArraySubscript sym flags baseExpr indicesExprs state = do
+evalArraySubscript sym flags span baseExpr indicesExprs state = do
     arrayExpr <-
         case baseExpr of
             ExpValue _ann _span (ValVariable name) ->
@@ -464,6 +469,6 @@ evalArraySubscript sym flags baseExpr indicesExprs state = do
         (\(maybeIndices, state1) ->
             case maybeIndices of
                 Nothing -> pure [ValueComputationHaltedState state1]
-                Just indices -> lookupSomeArray sym flags arrayExpr indices state1
+                Just indices -> lookupSomeArray sym flags span arrayExpr indices state1
         )
         indexResults

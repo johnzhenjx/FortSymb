@@ -1,6 +1,7 @@
 module EvalExpr where
 
 import Language.Fortran.AST (Expression, TypeSpec)
+import Language.Fortran.Util.Position (SrcSpan)
 import What4.Interface (IsSymExprBuilder)
 import What4.Expr.Builder
 
@@ -35,6 +36,7 @@ coerceOnAssignment :: IsSymExprBuilder sym
 
 coerceArrayOnAssignment :: ExprBuilder t st fs
     -> ExecutorFlags
+    -> SrcSpan
     -> SomeExpr (ExprBuilder t st fs)
     -> SomeExpr (ExprBuilder t st fs)
     -> SymState (ExprBuilder t st fs) a

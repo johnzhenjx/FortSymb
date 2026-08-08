@@ -1,6 +1,7 @@
 module Procedures where
 
 import Language.Fortran.AST
+import Language.Fortran.Util.Position (SrcSpan)
 import What4.Interface
 import What4.Expr.Builder
 
@@ -88,7 +89,7 @@ evalMatchedFunctionArguments ::
     -> ExecutorFlags 
     -> [(VarName, Expression a)] 
     -> SymState (ExprBuilder t st fs) a 
-    -> IO [(Maybe [(VarName, SomeExpr (ExprBuilder t st fs))], SymState (ExprBuilder t st fs) a)]
+    -> IO [(Maybe [(VarName, SrcSpan, SomeExpr (ExprBuilder t st fs))], SymState (ExprBuilder t st fs) a)]
 evalMatchedFunctionArguments sym flags matchedArguments initialState =
     go matchedArguments initialState
     where
@@ -104,7 +105,7 @@ evalMatchedFunctionArguments sym flags matchedArguments initialState =
                             (\(maybeRemainingValues, state2) ->
                                 case maybeRemainingValues of
                                     Nothing -> pure [(Nothing, state2)]
-                                    Just remainingValues -> pure [(Just ((parameterName, value) : remainingValues), state2)]
+                                    Just remainingValues -> pure [(Just ((parameterName, expressionSpan expression, value) : remainingValues), state2)]
                             )
                     )
                     (\haltedState -> pure [(Nothing, haltedState)])
@@ -116,7 +117,7 @@ evalMatchedSubroutineArguments ::
     -> ExecutorFlags
     -> [(VarName, Expression a)]
     -> SymState (ExprBuilder t st fs) a
-    -> IO [(Maybe [(VarName, Maybe (SomeExpr (ExprBuilder t st fs)))], SymState (ExprBuilder t st fs) a)]
+    -> IO [(Maybe [(VarName, SrcSpan, Maybe (SomeExpr (ExprBuilder t st fs)))], SymState (ExprBuilder t st fs) a)]
 evalMatchedSubroutineArguments sym flags matchedArguments initialState =
     go matchedArguments initialState
     where
@@ -125,7 +126,7 @@ evalMatchedSubroutineArguments sym flags matchedArguments initialState =
 
             (parameterName, expression) : remainingArguments ->
                 case expression of
-                    ExpValue _ann _span (ValVariable argumentName) -> do
+                    ExpValue _ann span (ValVariable argumentName) -> do
                         argumentValue <-
                             case Map.lookup argumentName (env state) of
                                 Nothing -> error $ "Subroutine argument is not declared: " ++ argumentName
@@ -137,7 +138,7 @@ evalMatchedSubroutineArguments sym flags matchedArguments initialState =
                                 case maybeRemainingValues of
                                     Nothing -> pure [(Nothing, state1)]
                                     Just remainingValues ->
-                                        pure [(Just ((parameterName, argumentValue) : remainingValues), state1)]
+                                        pure [(Just ((parameterName, span, argumentValue) : remainingValues), state1)]
                             )
 
                     _ ->
@@ -149,7 +150,7 @@ evalMatchedSubroutineArguments sym flags matchedArguments initialState =
                                     (\(maybeRemainingValues, state2) ->
                                         case maybeRemainingValues of
                                             Nothing -> pure [(Nothing, state2)]
-                                            Just remainingValues -> pure [(Just ((parameterName, Just value) : remainingValues), state2)]
+                                            Just remainingValues -> pure [(Just ((parameterName, expressionSpan expression, Just value) : remainingValues), state2)]
                                     )
                             )
                             (\haltedState -> pure [(Nothing, haltedState)])
@@ -157,6 +158,16 @@ evalMatchedSubroutineArguments sym flags matchedArguments initialState =
 
 argumentToExpr :: Argument a -> Expression a
 argumentToExpr argument = case argumentExpr argument of {ArgExpr expr -> expr; _ -> error "Unsupported function arg"}
+
+expressionSpan :: Expression a -> SrcSpan
+expressionSpan expression =
+    case expression of
+        ExpValue _ span _ -> span
+        ExpBinary _ span _ _ _ -> span
+        ExpUnary _ span _ _ -> span
+        ExpSubscript _ span _ _ -> span
+        ExpFunctionCall _ span _ _ -> span
+        _ -> error "Unsupported procedure argument expression"
 
 
 -- matchProcedureArguments matches each formal parameter with the original argument expression from the caller:
@@ -220,7 +231,7 @@ matchProcedureArguments parameterNames arguments = do
 --after declaration blocks, bind input values to their corrosponding variable bindings in local scope
 bindFunctionParameters :: ExprBuilder t st fs
     -> ExecutorFlags 
-    -> [(VarName, SomeExpr (ExprBuilder t st fs))]
+    -> [(VarName, SrcSpan, SomeExpr (ExprBuilder t st fs))]
     -> SymState (ExprBuilder t st fs) a
     -> IO [SymState (ExprBuilder t st fs) a]
 bindFunctionParameters sym flags argumentValues initialState =
@@ -228,12 +239,12 @@ bindFunctionParameters sym flags argumentValues initialState =
     where
         go state argPairs = case argPairs of
             [] -> pure [state]
-            (parameterName, argumentValue) : rest -> do
+            (parameterName, span, argumentValue) : rest -> do
                 case Map.lookup parameterName (env state) of
                     Nothing -> error $ "Function parameter is not declared: " ++ parameterName
                     Just binding ->
                         bindValueOutcomes
-                            (coerceParameterValue sym flags binding argumentValue state)
+                            (coerceParameterValue sym flags span binding argumentValue state)
                             (\(boundValue, state1) ->
                                 let updatedBinding = binding { varValue = Just boundValue }
                                     state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
@@ -245,7 +256,7 @@ bindFunctionParameters sym flags argumentValues initialState =
 --now this also takes Maybe (SomeExpr sym)
 bindSubroutineParameters :: ExprBuilder t st fs
     -> ExecutorFlags 
-    -> [(VarName, Maybe (SomeExpr (ExprBuilder t st fs)))]
+    -> [(VarName, SrcSpan, Maybe (SomeExpr (ExprBuilder t st fs)))]
     -> SymState (ExprBuilder t st fs) a
     -> IO [SymState (ExprBuilder t st fs) a]
 bindSubroutineParameters sym flags argumentValues initialState =
@@ -253,7 +264,7 @@ bindSubroutineParameters sym flags argumentValues initialState =
     where
         go state argPairs = case argPairs of
             [] -> pure [state]
-            (parameterName, maybeArgumentValue) : rest -> do
+            (parameterName, span, maybeArgumentValue) : rest -> do
                 case Map.lookup parameterName (env state) of
                     Nothing -> error $ "Function parameter is not declared: " ++ parameterName
                     Just binding -> do
@@ -265,7 +276,7 @@ bindSubroutineParameters sym flags argumentValues initialState =
 
                             Just argumentValue ->
                                 bindValueOutcomes
-                                    (coerceParameterValue sym flags binding argumentValue state)
+                                    (coerceParameterValue sym flags span binding argumentValue state)
                                     (\(boundValue, state1) ->
                                         let updatedBinding = binding { varValue = Just boundValue }
                                             state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
@@ -274,24 +285,24 @@ bindSubroutineParameters sym flags argumentValues initialState =
                                     (\haltedState -> pure [haltedState])
                         
 
-coerceParameterValue :: ExprBuilder t st fs -> ExecutorFlags -> VarBinding (ExprBuilder t st fs) -> SomeExpr (ExprBuilder t st fs) -> SymState (ExprBuilder t st fs) a -> IO [ValueOutcome (ExprBuilder t st fs) a]
-coerceParameterValue sym flags binding argumentValue state =
+coerceParameterValue :: ExprBuilder t st fs -> ExecutorFlags -> SrcSpan -> VarBinding (ExprBuilder t st fs) -> SomeExpr (ExprBuilder t st fs) -> SymState (ExprBuilder t st fs) a -> IO [ValueOutcome (ExprBuilder t st fs) a]
+coerceParameterValue sym flags span binding argumentValue state =
     case (varType binding, argumentValue) of
         -- Array parameter with array argument
         (VarArray _ _, SomeIntArray{}) ->
             case varValue binding of
                 Nothing -> error "Array parameter has no declared array value"
-                Just targetArray -> coerceArrayOnAssignment sym flags targetArray argumentValue state
+                Just targetArray -> coerceArrayOnAssignment sym flags span targetArray argumentValue state
 
         (VarArray _ _, SomeRealArray{}) ->
             case varValue binding of
                 Nothing -> error "Array parameter has no declared array value"
-                Just targetArray -> coerceArrayOnAssignment sym flags targetArray argumentValue state
+                Just targetArray -> coerceArrayOnAssignment sym flags span targetArray argumentValue state
 
         (VarArray _ _, SomeBoolArray{}) ->
             case varValue binding of
                 Nothing -> error "Array parameter has no declared array value"
-                Just targetArray -> coerceArrayOnAssignment sym flags targetArray argumentValue state
+                Just targetArray -> coerceArrayOnAssignment sym flags span targetArray argumentValue state
 
         -- Array parameter with scalar argument
         (VarArray _ _, _) -> error "Scalar argument passed to array parameter"

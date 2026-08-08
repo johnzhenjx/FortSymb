@@ -2,6 +2,7 @@ module SymbolicPath where
 
 import What4.Interface
 import What4.Expr.Builder
+import Language.Fortran.Util.Position (SrcSpan)
 
 import Types
 import Solver
@@ -22,13 +23,15 @@ addPathConditionAndKeepIfFeasible sym predicate state = do
 addObligationAndAssume ::
     ExprBuilder t st fs ->
     ObligationKind ->
+    SrcSpan ->
     Pred (ExprBuilder t st fs) ->
     SymState (ExprBuilder t st fs) a ->
     IO (SymState (ExprBuilder t st fs) a)
 
-addObligationAndAssume sym kind predicate state = do
+addObligationAndAssume sym kind span predicate state = do
     let obligation = Obligation
                 { obligationKind = kind
+                , obligationSpan = span
                 , obligationPredicate = predicate
                 , obligationPath = pathCond state
                 }
@@ -42,4 +45,4 @@ addObligationAndAssume sym kind predicate state = do
         Just continuingState -> pure continuingState
         Nothing ->
             pure stateWithObligation
-                { executionStatus = ExecutionHalted (ObligationCannotHold kind) }
+                { executionStatus = ExecutionHalted (ObligationCannotHold kind span) }

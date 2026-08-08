@@ -81,6 +81,7 @@ data ExecutorFlags = ExecutorFlags
 
 data Obligation sym = Obligation
     { obligationKind :: ObligationKind,
+      obligationSpan :: SrcSpan,
       obligationPredicate :: Pred sym,
       obligationPath :: [Pred sym]
     }
@@ -98,6 +99,7 @@ data HaltReason
         }
     | ObligationCannotHold
         { unsatObligationKind :: ObligationKind
+        , unsatObligationSpan :: SrcSpan
         }
     deriving (Show)
 
