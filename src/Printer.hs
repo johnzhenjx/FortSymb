@@ -3,14 +3,25 @@
 
 module Printer where
 
+import Data.Char (toUpper)
+import Data.List (dropWhileEnd)
 import qualified Data.Map as Map
+import Data.Maybe (isJust)
+import System.Console.ANSI
+    ( Color (Cyan, Green, Red)
+    , ColorIntensity (Vivid)
+    , ConsoleIntensity (BoldIntensity, FaintIntensity)
+    , ConsoleLayer (Foreground)
+    , SGR (Reset, SetColor, SetConsoleIntensity)
+    , hNowSupportsANSI
+    , setSGRCode
+    )
+import System.Environment (lookupEnv)
+import System.IO (hIsTerminalDevice, stdout)
 
-import Arrays
 import Types
 
-import What4.Expr
-    ( ExprBuilder
-    )
+import What4.Expr (ExprBuilder)
 import What4.Interface
     ( BaseBoolType
     , IsExpr
@@ -19,48 +30,56 @@ import What4.Interface
     )
 
 
+styledText :: [SGR] -> String -> IO String
+styledText style text = do
+    enabled <- colourEnabled
+    pure $
+        if enabled
+            then setSGRCode style ++ text ++ setSGRCode [Reset]
+            else text
+
+
+colourEnabled :: IO Bool
+colourEnabled = do
+    outputIsTerminal <- hIsTerminalDevice stdout
+    outputSupportsAnsi <-
+        if outputIsTerminal
+            then hNowSupportsANSI stdout
+            else pure False
+    noColourRequested <- isJust <$> lookupEnv "NO_COLOR"
+    pure (outputIsTerminal && outputSupportsAnsi && not noColourRequested)
+
+
+normalStyle, boldStyle, greenStyle, redStyle, cyanStyle, secondaryStyle :: [SGR]
+normalStyle = [Reset]
+boldStyle = [SetConsoleIntensity BoldIntensity]
+greenStyle = [SetColor Foreground Vivid Green]
+redStyle = [SetColor Foreground Vivid Red]
+cyanStyle = [SetColor Foreground Vivid Cyan]
+secondaryStyle = [SetConsoleIntensity FaintIntensity]
+
+
 showSymExpr :: IsExpr expr => expr tp -> String
-showSymExpr =
-    show . printSymExpr
+showSymExpr = show . printSymExpr
 
 
-showBinding ::
-    IsExpr (SymExpr sym) =>
-    VarBinding sym ->
-    String
+showBinding :: IsExpr (SymExpr sym) => VarBinding sym -> String
 showBinding binding =
     show (varType binding)
         ++ case varValue binding of
-            Nothing ->
-                ", uninitialised"
-
-            Just value ->
-                ", initialised = " ++ showSomeExpr value
+            Nothing -> ", uninitialised"
+            Just value -> ", initialised = " ++ showSomeExpr value
 
 
-showSomeExpr ::
-    IsExpr (SymExpr sym) =>
-    SomeExpr sym ->
-    String
+showSomeExpr :: IsExpr (SymExpr sym) => SomeExpr sym -> String
 showSomeExpr value =
     case value of
-        SomeInt expression ->
-            "int " ++ showSymExpr expression
-
-        SomeReal expression ->
-            "real " ++ showSymExpr expression
-
-        SomeBool predicate ->
-            "bool " ++ showSymExpr predicate
-
-        SomeIntArray array ->
-            showArrayRecord "integer" array
-
-        SomeRealArray array ->
-            showArrayRecord "real" array
-
-        SomeBoolArray array ->
-            showArrayRecord "logical" array
+        SomeInt expression -> "int " ++ showSymExpr expression
+        SomeReal expression -> "real " ++ showSymExpr expression
+        SomeBool predicate -> "bool " ++ showSymExpr predicate
+        SomeIntArray array -> showArrayRecord "integer" array
+        SomeRealArray array -> showArrayRecord "real" array
+        SomeBoolArray array -> showArrayRecord "logical" array
 
 
 showArrayRecord ::
@@ -83,11 +102,8 @@ showArrayDimensions ::
     String
 showArrayDimensions dimensions =
     case dimensions of
-        [] ->
-            " none"
-
-        _ ->
-            concatMap showDimension (numbered dimensions)
+        [] -> " none"
+        _ -> concatMap showDimension (numbered dimensions)
   where
     showDimension (index, dimension) =
         "\n  "
@@ -101,11 +117,8 @@ showArrayDimensions dimensions =
 showExecutionStatus :: ExecutionStatus -> String
 showExecutionStatus status =
     case status of
-        ExecutionComplete ->
-            "Complete"
-
-        ExecutionHalted reason ->
-            "Halted: " ++ showHaltReason reason
+        ExecutionComplete -> "Complete"
+        ExecutionHalted reason -> "Halted: " ++ showHaltReason reason
 
 
 showHaltReason :: HaltReason -> String
@@ -121,8 +134,12 @@ showHaltReason reason =
                     ++ show unrollCount
                     ++ " iterations"
 
-        ObligationCannotHold kind span ->
-            "obligation cannot hold: " ++ show kind ++ " at " ++ show span
+        ObligationCannotHold kind sourceSpan ->
+            "obligation cannot hold: "
+                ++ show kind
+                ++ " at "
+                ++ show sourceSpan
+
 
 printStates ::
     IsExpr (SymExpr sym) =>
@@ -130,13 +147,11 @@ printStates ::
     [SymState sym a] ->
     IO ()
 printStates label states = do
-    putStrLn $ stateCountHeading label (length states)
-    putStrLn ""
-
+    printReportHeading label (length states)
     mapM_ printNumberedState (numbered states)
   where
     printNumberedState (index, state) = do
-        putStrLn $ "=== State " ++ show index ++ " ==="
+        printStateHeading index
         printState state
 
 
@@ -145,19 +160,23 @@ printState ::
     SymState sym a ->
     IO ()
 printState state = do
-    putStrLn $ "Execution status: " ++ showExecutionStatus (executionStatus state)
+    statusText <-
+        styledText
+            (case executionStatus state of
+                ExecutionComplete -> normalStyle
+                ExecutionHalted _ -> redStyle)
+            (showExecutionStatus (executionStatus state))
+    putStrLn $ "  Status: " ++ statusText
 
     printEnvironment state
 
-    printPredicates
-        "Path conditions:"
+    printPredicatesAt
+        2
+        "Path conditions"
         "<true>"
         (reverse (pathCond state))
 
-    printObligations
-        (reverse (obligations state))
-
-    putStrLn ""
+    printObligations (reverse (obligations state))
 
 
 printEnvironment ::
@@ -165,19 +184,68 @@ printEnvironment ::
     SymState sym a ->
     IO ()
 printEnvironment state = do
-    putStrLn "Environment:"
+    printSectionHeading 2 "Environment"
 
-    printCollection
-        "  <empty>"
-        printBinding
-        (Map.toList (env state))
+    case Map.toList (env state) of
+        [] -> printSecondaryLine 4 "<empty>"
+        bindings -> mapM_ printBindingEntry bindings
+
+    putStrLn ""
   where
-    printBinding (name, binding) =
-        putStrLn $
-            "  "
-                ++ name
-                ++ " : "
-                ++ indentFollowingLines 4 (showBinding binding)
+    printBindingEntry (name, binding) = do
+        nameText <- styledText boldStyle name
+        typeText <- styledText normalStyle (" : " ++ show (varType binding))
+
+        case varValue binding of
+            Nothing ->
+                putStrLn $ "    " ++ nameText ++ typeText ++ " = <uninitialised>"
+
+            Just value ->
+                printBoundValue nameText typeText value
+
+    printBoundValue name typeText value =
+        case value of
+            SomeInt expression ->
+                printInlineOrBlock 4 (name ++ typeText ++ " = ") (showSymExpr expression)
+
+            SomeReal expression ->
+                printInlineOrBlock 4 (name ++ typeText ++ " = ") (showSymExpr expression)
+
+            SomeBool predicate ->
+                printInlineOrBlock 4 (name ++ typeText ++ " = ") (showSymExpr predicate)
+
+            SomeIntArray array ->
+                printArrayValue name typeText "integer" array
+
+            SomeRealArray array ->
+                printArrayValue name typeText "real" array
+
+            SomeBoolArray array ->
+                printArrayValue name typeText "logical" array
+
+    printArrayValue name typeText elementType array = do
+        arrayDescription <-
+            styledText normalStyle (" (initialised " ++ elementType ++ " array)")
+        putStrLn $ "    " ++ name ++ typeText ++ arrayDescription
+
+        case numbered (arrayDimensions array) of
+            [] -> printSecondaryLine 6 "Dimensions: <none>"
+            dimensions -> mapM_ printDimension dimensions
+
+        printInlineOrBlock 6 "Contents: " (showSymExpr (arrayContents array))
+        printInlineOrBlock 6 "Initialisation mask: " (showSymExpr (arrayInitMask array))
+
+    printDimension (index, dimension) = do
+        let lower = showSymExpr (dimensionLower dimension)
+            upper = showSymExpr (dimensionUpper dimension)
+            label = "Dimension " ++ show index ++ ": "
+        case (lines lower, lines upper) of
+            ([lowerLine], [upperLine]) ->
+                printSecondaryLine 6 (label ++ lowerLine ++ " .. " ++ upperLine)
+            _ -> do
+                printSecondaryLine 6 ("Dimension " ++ show index ++ ":")
+                printInlineOrBlock 8 "Lower: " lower
+                printInlineOrBlock 8 "Upper: " upper
 
 
 printPredicates ::
@@ -186,8 +254,7 @@ printPredicates ::
     String ->
     [expr BaseBoolType] ->
     IO ()
-printPredicates heading emptyMessage predicates = do
-    printPredicatesAt 0 heading emptyMessage predicates
+printPredicates = printPredicatesAt 0
 
 
 printPredicatesAt ::
@@ -198,19 +265,17 @@ printPredicatesAt ::
     [expr BaseBoolType] ->
     IO ()
 printPredicatesAt indentation heading emptyMessage predicates = do
-    putStrLn $ indent indentation heading
+    printSectionHeading indentation (dropTrailingColon heading)
 
-    printCollection
-        (indent (indentation + 2) emptyMessage)
-        printPredicate
-        (numbered predicates)
-  where
-    printPredicate (index, predicate) =
-        putStrLn $
-            indent (indentation + 2) ""
-                ++ show index
-                ++ ". "
-                ++ showSymExpr predicate
+    case numbered predicates of
+        [] -> printSecondaryLine (indentation + 2) emptyMessage
+        numberedPredicates ->
+            printNumberedTextBlocks
+                normalStyle
+                (indentation + 2)
+                (map (\(index, predicate) -> (index, showSymExpr predicate)) numberedPredicates)
+
+    putStrLn ""
 
 
 printObligations ::
@@ -218,31 +283,37 @@ printObligations ::
     [Obligation sym] ->
     IO ()
 printObligations obligationsToPrint = do
-    putStrLn "Proof obligations:"
+    printSectionHeading 2 "Proof obligations"
 
-    printCollection
-        "  <none>"
-        printObligation
-        (numbered obligationsToPrint)
+    case numbered obligationsToPrint of
+        [] -> printSecondaryLine 4 "<none>"
+        numberedObligations -> mapM_ printObligation numberedObligations
+
+    putStrLn ""
   where
     printObligation (index, obligation) = do
+        kindText <- styledText cyanStyle (show (obligationKind obligation))
+        spanText <-
+            styledText normalStyle (" at " ++ show (obligationSpan obligation))
         putStrLn $
-            "  "
+            "    "
                 ++ show index
                 ++ ". "
-                ++ show (obligationKind obligation)
-                ++ " at "
-                ++ show (obligationSpan obligation)
+                ++ kindText
+                ++ spanText
 
-        putStrLn $
-            "    Predicate: "
-                ++ showSymExpr (obligationPredicate obligation)
+        printInlineOrBlock
+            6 "Predicate: "
+            (showSymExpr (obligationPredicate obligation))
 
-        printPredicatesAt
-            4
-            "Path at generation:"
-            "<true>"
-            (reverse (obligationPath obligation))
+        case numbered (reverse (obligationPath obligation)) of
+            [] -> printSecondaryLine 6 "Path: <true>"
+            predicates -> do
+                printSecondaryLine 6 "Path:"
+                printNumberedTextBlocks
+                    normalStyle
+                    8
+                    (map (\(pathIndex, predicate) -> (pathIndex, showSymExpr predicate)) predicates)
 
 
 printAllObligationResults ::
@@ -256,17 +327,8 @@ printAllObligationResults stateResults =
     mapM_ printStateResult (numbered stateResults)
   where
     printStateResult (stateNumber, results) = do
-        putStrLn $
-            "=== Obligation results for state "
-                ++ show stateNumber
-                ++ " ==="
-
-        printCollection
-            "  <none>"
-            printObligationResult
-            (numbered results)
-
-        putStrLn ""
+        printStateHeading stateNumber
+        printObligationResults results
 
 
 printStatesWithObligationResults ::
@@ -276,35 +338,32 @@ printStatesWithObligationResults ::
     [[(Obligation sym, ObligationResult)]] ->
     IO ()
 printStatesWithObligationResults label states stateResults = do
-    putStrLn $ stateCountHeading label (length states)
-    putStrLn ""
-
+    printReportHeading label (length states)
     printPairedStates (1 :: Int) states stateResults
-    where
-        printPairedStates _ [] [] =
-            pure ()
+  where
+    printPairedStates _ [] [] = pure ()
 
-        printPairedStates index (state : remainingStates) (results : remainingResults) = do
-            putStrLn $ "=== State " ++ show index ++ " ==="
-            printState state
-            putStrLn "Obligation results:"
+    printPairedStates index (state : remainingStates) (results : remainingResults) = do
+        printStateHeading index
+        printState state
+        printObligationResults results
+        printPairedStates (index + 1) remainingStates remainingResults
 
-            printCollection
-                "  <none>"
-                printObligationResult
-                (numbered results)
-
-            putStrLn "\n"
-            printPairedStates (index + 1) remainingStates remainingResults
-
-        printPairedStates _ _ _ =
-            error "State and obligation-result counts do not match."
+    printPairedStates _ _ _ =
+        error "State and obligation-result counts do not match."
 
 
-stateCountHeading :: String -> Int -> String
-stateCountHeading label stateCount =
-    unwords
-        (["Number", "of"] ++ words label ++ ["states:", show stateCount])
+printObligationResults ::
+    [(Obligation sym, ObligationResult)] ->
+    IO ()
+printObligationResults results = do
+    printSectionHeading 2 "Obligation results"
+
+    case numbered results of
+        [] -> printSecondaryLine 4 "<none>"
+        numberedResults -> mapM_ printObligationResult numberedResults
+
+    putStrLn ""
 
 
 printObligationResult ::
@@ -314,77 +373,166 @@ printObligationResult
     ( obligationNumber
     , (obligation, result)
     ) = do
+        kindText <- styledText cyanStyle (show (obligationKind obligation))
+        spanText <-
+            styledText normalStyle (" at " ++ show (obligationSpan obligation))
+        resultText <-
+            styledText
+                (case result of
+                    ObligationValid -> greenStyle
+                    ObligationInvalid _ -> redStyle)
+                (showObligationResult result)
         putStrLn $
-            "  "
+            "    "
                 ++ show obligationNumber
                 ++ ". "
-                ++ show (obligationKind obligation)
-                ++ " at "
-                ++ show (obligationSpan obligation)
+                ++ kindText
+                ++ spanText
                 ++ ": "
-                ++ showObligationResult result
+                ++ resultText
 
         case result of
-            ObligationValid ->
-                pure ()
-
-            ObligationInvalid counterexample ->
-                printCounterexample counterexample
+            ObligationValid -> pure ()
+            ObligationInvalid counterexample -> printCounterexample counterexample
 
 
 showObligationResult :: ObligationResult -> String
 showObligationResult result =
     case result of
-        ObligationValid ->
-            "Valid"
-
-        ObligationInvalid _ ->
-            "Invalid"
+        ObligationValid -> "Valid"
+        ObligationInvalid _ -> "Invalid"
 
 
 printCounterexample :: Counterexample -> IO ()
-printCounterexample counterexample =
+printCounterexample counterexample = do
+    putStrLn "      Counterexample:"
+
     case Map.toList counterexample of
-        [] ->
-            putStrLn "    Counterexample: <empty>"
-
-        variables -> do
-            putStrLn "    Counterexample:"
-
-            mapM_
-                printVariable
-                variables
+        [] -> printSecondaryLine 8 "<empty>"
+        variables -> mapM_ printVariable variables
   where
-    printVariable (name, maybeValue) =
-        putStrLn $
-            "      "
-                ++ name
-                ++ " = "
-                ++ maybe "<uninitialised>" id maybeValue
+    printVariable (name, maybeValue) = do
+        nameText <- styledText boldStyle name
+        printInlineOrBlock
+            8 (nameText ++ " = ") (maybe "<uninitialised>" id maybeValue)
 
 
-printCollection ::
-    String ->
-    (value -> IO ()) ->
-    [value] ->
-    IO ()
-printCollection emptyMessage printValue values =
-    case values of
-        [] ->
-            putStrLn emptyMessage
+printReportHeading :: String -> Int -> IO ()
+printReportHeading label stateCount = do
+    heading <- styledText boldStyle "FortSymb verification report"
+    stateCountText <- styledText normalStyle (stateCountHeading label stateCount)
+    putStrLn heading
+    putStrLn stateCountText
+    putStrLn ""
 
-        _ ->
-            mapM_ printValue values
+
+printStateHeading :: Int -> IO ()
+printStateHeading index = do
+    heading <- styledText boldStyle ("State " ++ show index)
+    putStrLn heading
+
+
+printSectionHeading :: Int -> String -> IO ()
+printSectionHeading indentation heading = do
+    styledHeading <- styledText boldStyle heading
+    putStrLn $ indent indentation styledHeading
+
+
+printExpressionField :: Int -> String -> String -> IO ()
+printExpressionField indentation label expression = do
+    putStrLn $ indent indentation (label ++ ":")
+    printTextBlock (indentation + 2) expression
+
+
+printInlineOrBlock :: Int -> String -> String -> IO ()
+printInlineOrBlock indentation prefix text =
+    case nonEmptyLines text of
+        [singleLine] ->
+            putStrLn $ indent indentation (prefix ++ singleLine)
+        textLines -> do
+            putStrLn $ indent indentation (dropWhileEnd (== ' ') prefix)
+            mapM_ (putStrLn . indent (indentation + 2)) textLines
+
+
+printStyledInlineOrBlock :: [SGR] -> Int -> String -> String -> IO ()
+printStyledInlineOrBlock style indentation prefix text =
+    case nonEmptyLines text of
+        [singleLine] ->
+            styledText style (prefix ++ singleLine)
+                >>= putStrLn . indent indentation
+        textLines -> do
+            styledText style (dropWhileEnd (== ' ') prefix)
+                >>= putStrLn . indent indentation
+            mapM_ (printStyledLine style (indentation + 2)) textLines
+
+
+printSecondaryLine :: Int -> String -> IO ()
+printSecondaryLine = printStyledLine normalStyle
+
+
+printStyledLine :: [SGR] -> Int -> String -> IO ()
+printStyledLine style indentation text =
+    styledText style text >>= putStrLn . indent indentation
+
+
+printNumberedTextBlocks :: [SGR] -> Int -> [(Int, String)] -> IO ()
+printNumberedTextBlocks style indentation entries =
+    case entries of
+        [] -> pure ()
+        (index, "true") : remainingEntries -> do
+            let (remainingTrueEntries, rest) =
+                    span ((== "true") . snd) remainingEntries
+                finalIndex =
+                    case reverse remainingTrueEntries of
+                        [] -> index
+                        (lastIndex, _) : _ -> lastIndex
+                indexLabel =
+                    if finalIndex == index
+                        then show index
+                        else show index ++ "-" ++ show finalIndex
+            printStyledLine style indentation (indexLabel ++ ". true")
+            printNumberedTextBlocks style indentation rest
+
+        (index, text) : remainingEntries -> do
+            printStyledInlineOrBlock style indentation (show index ++ ". ") text
+            printNumberedTextBlocks style indentation remainingEntries
+
+
+printTextBlock :: Int -> String -> IO ()
+printTextBlock indentation text =
+    mapM_ (putStrLn . indent indentation) (nonEmptyLines text)
+
+
+nonEmptyLines :: String -> [String]
+nonEmptyLines text =
+    case lines text of
+        [] -> [""]
+        textLines -> textLines
+
+
+stateCountHeading :: String -> Int -> String
+stateCountHeading label stateCount =
+    headingLabel ++ ": " ++ show stateCount
+  where
+    headingLabel =
+        case words label of
+            [] -> "States"
+            firstWord : remainingWords ->
+                unwords (capitalise firstWord : remainingWords) ++ " states"
+
+    capitalise word =
+        case word of
+            [] -> []
+            firstCharacter : remainingCharacters ->
+                toUpper firstCharacter : remainingCharacters
 
 
 numbered :: [value] -> [(Int, value)]
-numbered =
-    zip [1 ..]
+numbered = zip [1 ..]
 
 
 indent :: Int -> String -> String
-indent indentation text =
-    replicate indentation ' ' ++ text
+indent indentation text = replicate indentation ' ' ++ text
 
 
 indentFollowingLines :: Int -> String -> String
@@ -396,3 +544,10 @@ indentFollowingLines indentation text =
                 ++ concatMap
                     (\line -> "\n" ++ indent indentation line)
                     remainingLines
+
+
+dropTrailingColon :: String -> String
+dropTrailingColon text =
+    case reverse text of
+        ':' : remainingCharacters -> reverse remainingCharacters
+        _ -> text

@@ -952,8 +952,8 @@ execAssertionExpr sym flags span assertionExpr state =
             case assertionValue of
                 SomeBool predicate -> do
                     stateAfterCheck <-
-                        if userAssertionsEnabled flags
-                            then addObligationAndAssume sym UserAssertions span predicate newState
+                        if userAssertionEnabled flags
+                            then addObligationAndAssume sym UserAssertion span predicate newState
                             else pure newState
                     pure [stateAfterCheck]
 

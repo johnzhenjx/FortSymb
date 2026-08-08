@@ -69,12 +69,12 @@ data ProcedureDef a
 type ProcedureEnv a = Map String (ProcedureDef a)
 
 
-data ObligationKind = UserAssertions | DivByZero | ArrayBounds | ArrayShape | IncrementStepNonZero | UninitialisedRead
+data ObligationKind = UserAssertion | DivByZero | ArrayBounds | ArrayShape | IncrementStepNonZero | UninitialisedRead
     deriving (Eq, Ord, Show)
 
 data ExecutorFlags = ExecutorFlags 
     {
-        userAssertionsEnabled :: Bool,
+        userAssertionEnabled :: Bool,
         maxDoLoopUnroll :: Int
     }
         

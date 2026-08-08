@@ -28,6 +28,7 @@ dependencies:
 - parameterized-utils
 - prettyprinter
 - optparse-applicative
+- ansi-terminal
 
 ghc-options:
 - -Wall

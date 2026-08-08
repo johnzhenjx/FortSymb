@@ -45,7 +45,7 @@ parseExecutorFlags = do
     maxUnroll <- option auto 
         ( long "max-unroll" <> metavar "N" <> value 10 <> showDefault <> help "Maximum number of DO-loop unrollings" )
     pure ExecutorFlags
-        { userAssertionsEnabled = assertionsEnabled
+        { userAssertionEnabled = assertionsEnabled
         , maxDoLoopUnroll = maxUnroll
         }
 
@@ -96,8 +96,9 @@ main = do
             print err
 
         Right ast -> do
-            putStrLn "Parsed successfully!"
-            print ast
+            styledAst <- styledText secondaryStyle (show ast)
+            putStrLn styledAst
+            putStrLn ""
 
             --changed from Some nonceGen <- newIONonceGenerator due to new {-# LANGUAGE ApplicativeDo #-}
             someNonceGen <- newIONonceGenerator
@@ -107,8 +108,6 @@ main = do
                     extendConfig z3Options (getConfiguration sym)
 
                     allStates <- execProgramFile sym flags ast
-                    printStates "" allStates
-
                     feasibleStates <- keepFeasibleStates sym allStates
                     obligationResults <- evaluateAllStateObligations sym feasibleStates
                     printStatesWithObligationResults "feasible" feasibleStates obligationResults

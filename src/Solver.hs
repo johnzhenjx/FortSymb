@@ -80,26 +80,12 @@ checkStateFeasibility sym state = do
 
 
 -- filters out states whose path conditions are unsatisfiable.
--- currently has logger attached - bad!
 keepFeasibleStates ::
     ExprBuilder t st fs ->
     [SymState (ExprBuilder t st fs) a] ->
     IO [SymState (ExprBuilder t st fs) a]
 keepFeasibleStates sym states = do
-    feasibleNumberedStates <-
-        filterM isFeasible (zip [(1 :: Int) ..] states)
-    pure (map snd feasibleNumberedStates)
-    where
-        isFeasible (stateNumber, state) = do
-            feasible <- checkStateFeasibility sym state
-            if feasible then do
-                putStrLn $
-                    show stateNumber ++ ". Satisfiable pathCond"
-                pure True
-            else do
-                putStrLn $
-                    show stateNumber ++ ". Unsatisfiable pathCond"
-                pure False
+    filterM (checkStateFeasibility sym) states
 
 
 
