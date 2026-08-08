@@ -126,10 +126,11 @@ showHaltReason reason =
 
 printStates ::
     IsExpr (SymExpr sym) =>
+    String ->
     [SymState sym a] ->
     IO ()
-printStates states = do
-    putStrLn $ "Number of states: " ++ show (length states)
+printStates label states = do
+    putStrLn $ stateCountHeading label (length states)
     putStrLn ""
 
     mapM_ printNumberedState (numbered states)
@@ -265,24 +266,66 @@ printAllObligationResults stateResults =
 
         putStrLn ""
 
-    printObligationResult
-        ( obligationNumber
-        , (obligation, result)
-        ) = do
-            putStrLn $
-                "  "
-                    ++ show obligationNumber
-                    ++ ". "
-                    ++ show (obligationKind obligation)
-                    ++ ": "
-                    ++ showObligationResult result
 
-            case result of
-                ObligationValid ->
-                    pure ()
+printStatesWithObligationResults ::
+    IsExpr (SymExpr sym) =>
+    String ->
+    [SymState sym a] ->
+    [[(Obligation sym, ObligationResult)]] ->
+    IO ()
+printStatesWithObligationResults label states stateResults = do
+    putStrLn $ stateCountHeading label (length states)
+    putStrLn ""
 
-                ObligationInvalid counterexample ->
-                    printCounterexample counterexample
+    printPairedStates (1 :: Int) states stateResults
+    where
+        printPairedStates _ [] [] =
+            pure ()
+
+        printPairedStates index (state : remainingStates) (results : remainingResults) = do
+            putStrLn $ "=== State " ++ show index ++ " ==="
+            printState state
+            putStrLn "Obligation results:"
+
+            printCollection
+                "  <none>"
+                printObligationResult
+                (numbered results)
+
+            putStrLn "\n"
+            printPairedStates (index + 1) remainingStates remainingResults
+
+        printPairedStates _ _ _ =
+            error "State and obligation-result counts do not match."
+
+
+stateCountHeading :: String -> Int -> String
+stateCountHeading label stateCount =
+    unwords
+        (["Number", "of"] ++ words label ++ ["states:", show stateCount])
+
+
+printObligationResult ::
+    (Int, (Obligation sym, ObligationResult)) ->
+    IO ()
+printObligationResult
+    ( obligationNumber
+    , (obligation, result)
+    ) = do
+        putStrLn $
+            "  "
+                ++ show obligationNumber
+                ++ ". "
+                ++ show (obligationKind obligation)
+                ++ ": "
+                ++ showObligationResult result
+
+        case result of
+            ObligationValid ->
+                pure ()
+
+            ObligationInvalid counterexample ->
+                printCounterexample counterexample
 
 
 showObligationResult :: ObligationResult -> String

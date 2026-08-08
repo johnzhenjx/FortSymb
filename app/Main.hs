@@ -127,10 +127,8 @@ main = do
                     extendConfig z3Options (getConfiguration sym)
 
                     allStates <- execProgramFile sym flags ast
-                    printStates allStates
+                    printStates "" allStates
 
                     feasibleStates <- keepFeasibleStates sym allStates
-                    printStates feasibleStates
-
                     obligationResults <- evaluateAllStateObligations sym feasibleStates
-                    printAllObligationResults obligationResults
+                    printStatesWithObligationResults "feasible" feasibleStates obligationResults
