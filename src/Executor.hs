@@ -98,6 +98,19 @@ execBlock sym flags block state =
             _endIfLabel -> 
                 execIfClauses sym flags (NonEmpty.toList nEcondAndBlocks) maybeElseBlocks state
 
+        BlCase
+            _ann
+            _span
+            _label
+            _name
+            selector
+            cases
+            maybeDefaultBlocks
+            _endSelectLabel ->
+                -- fortran-src 0.16.9 stores the CASE DEFAULT body in
+                -- reverse source order, unlike the ordinary CASE bodies.
+                execSelectCase sym flags selector cases (reverse <$> maybeDefaultBlocks) state
+
 
         -- outer: do i = 1, 10
         --     ...
@@ -1097,6 +1110,215 @@ execIfClauses sym flags condAndBlocks maybeElseBlocks state =
                         _ -> error "Logical IF condition must evaluate to logical"
                 )
                 (\haltedState -> pure [haltedState])
+
+
+execSelectCase ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    Expression a ->
+    [(AList Index a, [Block a])] ->
+    Maybe [Block a] ->
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
+execSelectCase sym flags selector cases maybeDefaultBlocks state =
+    bindValueOutcomes
+        (evalExpr sym flags selector state)
+        (\(selectorValue, state1) ->
+            case selectorValue of
+                SomeInt _ -> execCaseClauses sym flags selectorValue cases maybeDefaultBlocks state1
+                SomeBool _ -> execCaseClauses sym flags selectorValue cases maybeDefaultBlocks state1
+                _ -> error "SELECT CASE selector must be an integer or logical scalar"
+        )
+        (\haltedState -> pure [haltedState])
+
+
+execCaseClauses ::
+    ExprBuilder t st fs ->
+    ExecutorFlags ->
+    SomeExpr (ExprBuilder t st fs) ->
+    [(AList Index a, [Block a])] ->
+    Maybe [Block a] ->
+    SymState (ExprBuilder t st fs) a ->
+    IO [SymState (ExprBuilder t st fs) a]
+execCaseClauses sym flags selectorValue cases maybeDefaultBlocks state =
+    case cases of
+        [] ->
+            maybe
+                (pure [state])
+                (\defaultBlocks -> execBlocks sym flags defaultBlocks state)
+                maybeDefaultBlocks
+
+        (caseSelectorsInfo, caseBlocks) : remainingCases ->
+            bindValueOutcomes
+                (evalCaseSelectors sym flags selectorValue (alistList caseSelectorsInfo) state)
+                (\(casePredicateValue, state1) ->
+                    case casePredicateValue of
+                        SomeBool casePredicate -> do
+                            notCasePredicate <- notPred sym casePredicate
+                            maybeMatchingState <- addPathConditionAndKeepIfFeasible sym casePredicate state1
+                            maybeRemainingState <- addPathConditionAndKeepIfFeasible sym notCasePredicate state1
+
+                            matchingResults <-
+                                maybe
+                                    (pure [])
+                                    (execBlocks sym flags caseBlocks)
+                                    maybeMatchingState
+
+                            remainingResults <-
+                                maybe
+                                    (pure [])
+                                    (execCaseClauses sym flags selectorValue remainingCases maybeDefaultBlocks)
+                                    maybeRemainingState
+
+                            pure (matchingResults ++ remainingResults)
+
+                        _ -> error "Internal error: CASE selector list did not produce a logical predicate"
+                )
+                (\haltedState -> pure [haltedState])
+
+    where
+        -- select case (x)
+        -- case (1, 3:5)
+        --     y = 10
+        -- case (6:)
+        --     y = 20
+        -- case default
+        --     y = 30
+        -- end select
+
+        -- is parsed as
+
+        -- BlCase
+        --     ...
+        --     x
+        --     [ ( AList
+        --           [ IxSingle ... 1
+        --           , IxRange ... (Just 3) (Just 5) Nothing
+        --           ]
+        --       , [y = 10]
+        --       )
+        --     , ( AList
+        --           [ IxRange ... (Just 6) Nothing Nothing ]
+        --       , [y = 20]
+        --       )
+        --     ]
+        --     (Just [y = 30])
+        --     ...
+
+        evalCaseSelectors ::
+            ExprBuilder t st fs ->
+            ExecutorFlags ->
+            SomeExpr (ExprBuilder t st fs) ->
+            [Index a] ->
+            SymState (ExprBuilder t st fs) a ->
+            IO [ValueOutcome (ExprBuilder t st fs) a]
+        evalCaseSelectors sym flags selectorValue caseSelectors state =
+            case caseSelectors of
+                [] -> pure [ValueAndStateProduced (SomeBool (falsePred sym)) state]
+
+                caseSelector : remainingSelectors ->
+                    bindValueOutcomes
+                        (evalCaseSelector sym flags selectorValue caseSelector state)
+                        (\(selectorPredicateValue, state1) ->
+                            case selectorPredicateValue of
+                                SomeBool selectorPredicate ->
+                                    bindValueOutcomes
+                                        (evalCaseSelectors sym flags selectorValue remainingSelectors state1)
+                                        (\(remainingPredicateValue, state2) ->
+                                            case remainingPredicateValue of
+                                                SomeBool remainingPredicate -> do
+                                                    combinedPredicate <- orPred sym selectorPredicate remainingPredicate
+                                                    pure [ ValueAndStateProduced (SomeBool combinedPredicate) state2 ]
+                                                _ -> error "CASE selector list did not produce a logical predicate"
+                                        )
+                                        (\haltedState -> pure [ValueComputationHaltedState haltedState])
+
+                                _ -> error "CASE selector did not produce a logical predicate"
+                        )
+                        (\haltedState -> pure [ValueComputationHaltedState haltedState])
+
+
+        evalCaseSelector ::
+            ExprBuilder t st fs ->
+            ExecutorFlags ->
+            SomeExpr (ExprBuilder t st fs) ->
+            Index a ->
+            SymState (ExprBuilder t st fs) a ->
+            IO [ValueOutcome (ExprBuilder t st fs) a]
+        evalCaseSelector sym flags selectorValue caseSelector state =
+            case caseSelector of
+                IxSingle _ann _span _name caseExpr ->
+                    bindValueOutcomes
+                        (evalExpr sym flags caseExpr state)
+                        (\(caseValue, state1) -> do
+                            predicate <- caseValuesEqual sym selectorValue caseValue
+                            pure [ValueAndStateProduced (SomeBool predicate) state1]
+                        )
+                        (\haltedState -> pure [ValueComputationHaltedState haltedState])
+
+                IxRange _ann _span maybeLowerExpr maybeUpperExpr maybeStride ->
+                    case maybeStride of
+                        Just _ -> error "CASE ranges with a stride are not valid Fortran SELECT CASE selectors"
+                        Nothing -> evalCaseRange sym flags selectorValue maybeLowerExpr maybeUpperExpr state
+
+
+        caseValuesEqual ::
+            IsSymExprBuilder sym =>
+            sym ->
+            SomeExpr sym ->
+            SomeExpr sym ->
+            IO (Pred sym)
+        caseValuesEqual sym selectorValue caseValue =
+            case (selectorValue, caseValue) of
+                (SomeInt selectorInteger, SomeInt caseInteger) -> intEq sym selectorInteger caseInteger
+                (SomeBool selectorPredicate, SomeBool casePredicate) -> eqPred sym selectorPredicate casePredicate
+                _ -> error "CASE value must have the same integer or logical type as the SELECT CASE selector"
+
+
+        evalCaseRange ::
+            ExprBuilder t st fs ->
+            ExecutorFlags ->
+            SomeExpr (ExprBuilder t st fs) ->
+            Maybe (Expression a) ->
+            Maybe (Expression a) ->
+            SymState (ExprBuilder t st fs) a ->
+            IO [ValueOutcome (ExprBuilder t st fs) a]
+        evalCaseRange sym flags selectorValue maybeLowerExpr maybeUpperExpr state =
+            case selectorValue of
+                SomeInt selectorInteger -> evalLowerBound selectorInteger state
+                _ -> error "CASE ranges require an integer selector"
+            where
+                evalLowerBound selectorInteger state1 =
+                    case maybeLowerExpr of
+                        Nothing -> evalUpperBound selectorInteger (truePred sym) state1
+                        Just lowerExpr ->
+                            bindValueOutcomes
+                                (evalExpr sym flags lowerExpr state1)
+                                (\(lowerValue, state2) ->
+                                    case lowerValue of
+                                        SomeInt lowerInteger -> do
+                                            lowerPredicate <- intLe sym lowerInteger selectorInteger
+                                            evalUpperBound selectorInteger lowerPredicate state2
+                                        _ -> error "CASE range bounds must be integer expressions"
+                                )
+                                (\haltedState -> pure [ValueComputationHaltedState haltedState])
+
+                evalUpperBound selectorInteger lowerPredicate state1 =
+                    case maybeUpperExpr of
+                        Nothing -> pure [ValueAndStateProduced (SomeBool lowerPredicate) state1]
+                        Just upperExpr ->
+                            bindValueOutcomes
+                                (evalExpr sym flags upperExpr state1)
+                                (\(upperValue, state2) ->
+                                    case upperValue of
+                                        SomeInt upperInteger -> do
+                                            upperPredicate <- intLe sym selectorInteger upperInteger
+                                            rangePredicate <- andPred sym lowerPredicate upperPredicate
+                                            pure [ValueAndStateProduced (SomeBool rangePredicate) state2]
+                                        _ -> error "CASE range bounds must be integer expressions"
+                                )
+                                (\haltedState -> pure [ValueComputationHaltedState haltedState])
+
 
 
 evalFunctionCall :: 

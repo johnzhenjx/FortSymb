@@ -67,6 +67,7 @@
 - `else`
 - Nested conditionals
 - Symbolic branching into multiple execution states
+- `select case` with integer values and ranges, logical values, and `case default`
 
 
 ## Proof Obligations
@@ -162,6 +163,5 @@ The following constructor features are not currently supported:
 - Modules
 - Derived types
 - Character and complex types
-- `select case`
 - General intrinsic functions
 - Formatted input and output
