@@ -107,7 +107,11 @@ main = do
                     sym <- newExprBuilder FloatRealRepr EmptyExprBuilderState nonceGen
                     extendConfig z3Options (getConfiguration sym)
 
-                    allStates <- execProgramFile sym flags ast
-                    feasibleStates <- keepFeasibleStates sym allStates
-                    obligationResults <- evaluateAllStateObligations sym feasibleStates
-                    printStatesWithObligationResults "feasible" feasibleStates obligationResults
+                    -- allStates <- execProgramFile sym flags ast
+                    -- feasibleStates <- keepFeasibleStates sym allStates
+                    -- obligationResults <- evaluateAllStateObligations sym feasibleStates
+                    -- printStatesWithObligationResults "feasible" feasibleStates obligationResults
+
+                    resultStates <- execProgramFile sym flags ast
+                    obligationResults <- evaluateAllStateObligations sym resultStates
+                    printStatesWithObligationResults "feasible" resultStates obligationResults
