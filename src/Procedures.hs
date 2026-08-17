@@ -11,7 +11,7 @@ import Data.Maybe (mapMaybe)
 import Data.Map (Map)  
 import qualified Data.Map as Map
 
-import {-# SOURCE #-} EvalExpr (evalExpr, bindBranches, bindValueOutcomes, coerceArrayOnAssignment, coerceOnAssignment)
+import {-# SOURCE #-} EvalExpr (evalExpr, bindValueOutcomes, coerceArrayOnAssignment, coerceOnAssignment)
 
 extractProcedureDef :: ProgramUnit a -> Maybe (String, ProcedureDef a) 
 extractProcedureDef programUnit =
@@ -89,26 +89,29 @@ evalMatchedFunctionArguments ::
     -> ExecutorFlags 
     -> [(VarName, Expression a)] 
     -> SymState (ExprBuilder t st fs) a 
-    -> IO [(Maybe [(VarName, SrcSpan, SomeExpr (ExprBuilder t st fs))], SymState (ExprBuilder t st fs) a)]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a [(VarName, SrcSpan, SomeExpr (ExprBuilder t st fs))]]
 evalMatchedFunctionArguments sym flags matchedArguments initialState =
     go matchedArguments initialState
     where
         go args state = case args of
-            [] -> pure [(Just [], state)]
+            [] -> pure [ValueAndStateProduced [] state]
 
             (parameterName, expression) : remainingArguments ->
                 bindValueOutcomes
                     (evalExpr sym flags expression state)
                     (\(value, state1) ->
-                        bindBranches
+                        bindValueOutcomes
                             (go remainingArguments state1)
-                            (\(maybeRemainingValues, state2) ->
-                                case maybeRemainingValues of
-                                    Nothing -> pure [(Nothing, state2)]
-                                    Just remainingValues -> pure [(Just ((parameterName, expressionSpan expression, value) : remainingValues), state2)]
+                            (\(remainingValues, state2) ->
+                                pure
+                                    [ ValueAndStateProduced
+                                        ((parameterName, expressionSpan expression, value) : remainingValues)
+                                        state2
+                                    ]
                             )
+                            (\haltedState -> pure [ValueComputationHaltedState haltedState])
                     )
-                    (\haltedState -> pure [(Nothing, haltedState)])
+                    (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
 -- subroutines may pass uninitialised variables inside and assign to them inside the call
 -- thus we need to wrap evaluated expressions inside Maybe
@@ -117,12 +120,12 @@ evalMatchedSubroutineArguments ::
     -> ExecutorFlags
     -> [(VarName, Expression a)]
     -> SymState (ExprBuilder t st fs) a
-    -> IO [(Maybe [(VarName, SrcSpan, Maybe (SomeExpr (ExprBuilder t st fs)))], SymState (ExprBuilder t st fs) a)]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a [(VarName, SrcSpan, Maybe (SomeExpr (ExprBuilder t st fs)))]]
 evalMatchedSubroutineArguments sym flags matchedArguments initialState =
     go matchedArguments initialState
     where
         go args state = case args of
-            [] -> pure [(Just [], state)]
+            [] -> pure [ValueAndStateProduced [] state]
 
             (parameterName, expression) : remainingArguments ->
                 case expression of
@@ -132,28 +135,33 @@ evalMatchedSubroutineArguments sym flags matchedArguments initialState =
                                 Nothing -> error $ "Subroutine argument is not declared: " ++ argumentName
                                 Just binding -> pure (varValue binding)
 
-                        bindBranches
+                        bindValueOutcomes
                             (go remainingArguments state)
-                            (\(maybeRemainingValues, state1) ->
-                                case maybeRemainingValues of
-                                    Nothing -> pure [(Nothing, state1)]
-                                    Just remainingValues ->
-                                        pure [(Just ((parameterName, span, argumentValue) : remainingValues), state1)]
+                            (\(remainingValues, state1) ->
+                                pure
+                                    [ ValueAndStateProduced
+                                        ((parameterName, span, argumentValue) : remainingValues)
+                                        state1
+                                    ]
                             )
+                            (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
                     _ ->
                         bindValueOutcomes
                             (evalExpr sym flags expression state)
                             (\(value, state1) ->
-                                bindBranches
+                                bindValueOutcomes
                                     (go remainingArguments state1)
-                                    (\(maybeRemainingValues, state2) ->
-                                        case maybeRemainingValues of
-                                            Nothing -> pure [(Nothing, state2)]
-                                            Just remainingValues -> pure [(Just ((parameterName, expressionSpan expression, Just value) : remainingValues), state2)]
+                                    (\(remainingValues, state2) ->
+                                        pure
+                                            [ ValueAndStateProduced
+                                                ((parameterName, expressionSpan expression, Just value) : remainingValues)
+                                                state2
+                                            ]
                                     )
+                                    (\haltedState -> pure [ValueComputationHaltedState haltedState])
                             )
-                            (\haltedState -> pure [(Nothing, haltedState)])
+                            (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
 
 argumentToExpr :: Argument a -> Expression a
@@ -285,7 +293,7 @@ bindSubroutineParameters sym flags argumentValues initialState =
                                     (\haltedState -> pure [haltedState])
                         
 
-coerceParameterValue :: ExprBuilder t st fs -> ExecutorFlags -> SrcSpan -> VarBinding (ExprBuilder t st fs) -> SomeExpr (ExprBuilder t st fs) -> SymState (ExprBuilder t st fs) a -> IO [ValueOutcome (ExprBuilder t st fs) a]
+coerceParameterValue :: ExprBuilder t st fs -> ExecutorFlags -> SrcSpan -> VarBinding (ExprBuilder t st fs) -> SomeExpr (ExprBuilder t st fs) -> SymState (ExprBuilder t st fs) a -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 coerceParameterValue sym flags span binding argumentValue state =
     case (varType binding, argumentValue) of
         -- Array parameter with array argument

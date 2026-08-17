@@ -17,8 +17,8 @@ bindBranches
 
 bindValueOutcomes
     :: Monad m
-    => m [ValueOutcome sym a]
-    -> ((SomeExpr sym, SymState sym a) -> m [b])
+    => m [ValueOutcome sym a value]
+    -> ((value, SymState sym a) -> m [b])
     -> (SymState sym a -> m [b])
     -> m [b]
 
@@ -26,7 +26,7 @@ evalExpr :: ExprBuilder t st fs
     -> ExecutorFlags
     -> Expression a
     -> SymState (ExprBuilder t st fs) a
-    -> IO [ValueOutcome (ExprBuilder t st fs) a]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 
 coerceOnAssignment :: IsSymExprBuilder sym
     => sym
@@ -40,4 +40,4 @@ coerceArrayOnAssignment :: ExprBuilder t st fs
     -> SomeExpr (ExprBuilder t st fs)
     -> SomeExpr (ExprBuilder t st fs)
     -> SymState (ExprBuilder t st fs) a
-    -> IO [ValueOutcome (ExprBuilder t st fs) a]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]

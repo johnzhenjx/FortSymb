@@ -498,42 +498,37 @@ execAllocate sym flags allocationObjects initialState = allocateObjects allocati
                                 Just _ -> error $ "Array is already allocated: " ++ name
 
                                 Nothing ->
-                                    bindBranches
+                                    bindValueOutcomes
                                         (evalAllocationDimensionIxs indexExprs state)
-                                        (\outcome ->
-                                            case outcome of
-                                                (Nothing, haltedState) -> pure [haltedState]
-                                                (Just dimensions, state1) ->
-                                                    if length dimensions /= rank then error $ "Allocation rank does not match declaration: " ++ name
+                                        (\(dimensions, state1) ->
+                                            if length dimensions /= rank then error $ "Allocation rank does not match declaration: " ++ name
 
-                                                    else do
-                                                        arrayExpr <- createUninitialisedArray sym name elementType dimensions
-                                                        let updatedBinding = binding { varValue = Just arrayExpr }
-                                                        pure [state1 { env = Map.insert name updatedBinding (env state1) }]
+                                            else do
+                                                arrayExpr <- createUninitialisedArray sym name elementType dimensions
+                                                let updatedBinding = binding { varValue = Just arrayExpr }
+                                                pure [state1 { env = Map.insert name updatedBinding (env state1) }]
                                         )
+                                        (\haltedState -> pure [haltedState])
 
                         _ -> error $ "Variable is not an array: " ++ name
 
 
         evalAllocationDimensionIxs indexExprs state =
             case indexExprs of
-                [] -> pure [(Just [], state)]
+                [] -> pure [ValueAndStateProduced [] state]
 
                 indexExpr : remainingExprs ->
-                    bindBranches
+                    bindValueOutcomes
                         (evalAllocationDimensionIx indexExpr state)
-                        (\outcome ->
-                            case outcome of
-                                (Nothing, haltedState) -> pure [(Nothing, haltedState)]
-                                (Just dimension, state1) ->
-                                    bindBranches
-                                        (evalAllocationDimensionIxs remainingExprs state1)
-                                        (\(maybeRemainingDimensions, finalState) ->
-                                            case maybeRemainingDimensions of
-                                                Nothing -> pure [(Nothing, finalState)]
-                                                Just remainingDimensions -> pure [(Just (dimension : remainingDimensions), finalState)]
-                                        )
+                        (\(dimension, state1) ->
+                            bindValueOutcomes
+                                (evalAllocationDimensionIxs remainingExprs state1)
+                                (\(remainingDimensions, finalState) ->
+                                    pure [ValueAndStateProduced (dimension : remainingDimensions) finalState]
+                                )
+                                (\haltedState -> pure [ValueComputationHaltedState haltedState])
                         )
+                        (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
         evalAllocationDimensionIx indexExpr state =
             case indexExpr of
@@ -545,10 +540,14 @@ execAllocate sym flags allocationObjects initialState = allocateObjects allocati
                         (\(upperValue, state1) ->
                             case upperValue of
                                 SomeInt upperBound ->
-                                    pure [(Just (ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound }), state1)]
+                                    pure
+                                        [ ValueAndStateProduced
+                                            (ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound })
+                                            state1
+                                        ]
                                 _ -> error "Allocation upper bound must be an integer"
                         )
-                        (\haltedState -> pure [(Nothing, haltedState)])
+                        (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
                 IxRange _ann _span maybeLowerExpr maybeUpperExpr Nothing ->
                     bindValueOutcomes
@@ -572,13 +571,17 @@ execAllocate sym flags allocationObjects initialState = allocateObjects allocati
                                                 (\(upperValue, state2) ->
                                                     case upperValue of
                                                         SomeInt upperBound ->
-                                                            pure [(Just (ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound }), state2)]
+                                                            pure
+                                                                [ ValueAndStateProduced
+                                                                    (ArrayDimension { dimensionLower = lowerBound, dimensionUpper = upperBound })
+                                                                    state2
+                                                                ]
                                                         _ -> error "Allocation upper bound must be an integer"
                                                 )
-                                                (\haltedState -> pure [(Nothing, haltedState)])
+                                                (\haltedState -> pure [ValueComputationHaltedState haltedState])
                                 _ -> error "Allocation lower bound must be an integer"
                         )
-                        (\haltedState -> pure [(Nothing, haltedState)])
+                        (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
                 IxRange _ann _span _lower _upper (Just _stride) -> error "Allocation strides are not supported"
 
@@ -681,44 +684,42 @@ declareArrayVar sym flags typeSpec attributes name dimensionListInfo maybeInitia
         pure [ state { env = Map.insert name (VarBinding arrayType Nothing) (env state) } ]
 
     | otherwise = do
-        bindBranches
+        bindValueOutcomes
             (evalArrayDimensions sym flags (alistList dimensionListInfo) state)
-            (\outcome ->
-                case outcome of
-                    (Nothing, haltedState) -> pure [haltedState]
-                    (Just dimensions, state1) ->
-                        case maybeInitial of
-                            Nothing -> do
-                                arrayValue <- createUninitialisedArray sym name (getVarType typeSpec) dimensions
-                                pure [state1 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state1) }]
+            (\(dimensions, state1) ->
+                case maybeInitial of
+                    Nothing -> do
+                        arrayValue <- createUninitialisedArray sym name (getVarType typeSpec) dimensions
+                        pure [state1 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state1) }]
 
-                            Just (ExpInitialisation _ann span elementsInfo) ->
-                                bindValueOutcomes
-                                    (createArrayFromConstructor
-                                        sym
-                                        flags
-                                        span
-                                        name
-                                        (getVarType typeSpec)
-                                        dimensions
-                                        (alistList elementsInfo)
-                                        state1
-                                    )
-                                    (\(arrayValue, state2) ->
-                                        pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }]
-                                    )
-                                    (\haltedState -> pure [haltedState])
+                    Just (ExpInitialisation _ann span elementsInfo) ->
+                        bindValueOutcomes
+                            (createArrayFromConstructor
+                                sym
+                                flags
+                                span
+                                name
+                                (getVarType typeSpec)
+                                dimensions
+                                (alistList elementsInfo)
+                                state1
+                            )
+                            (\(arrayValue, state2) ->
+                                pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }]
+                            )
+                            (\haltedState -> pure [haltedState])
 
-                            Just initExpr ->
-                                bindValueOutcomes
-                                    (evalExpr sym flags initExpr state1)
-                                    (\(initValue, state2) -> do
-                                        coercedValue <- coerceOnAssignment sym (getVarType typeSpec) initValue
-                                        arrayValue <- createConstantArray sym dimensions coercedValue
-                                        pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }]
-                                    )
-                                    (\haltedState -> pure [haltedState])
+                    Just initExpr ->
+                        bindValueOutcomes
+                            (evalExpr sym flags initExpr state1)
+                            (\(initValue, state2) -> do
+                                coercedValue <- coerceOnAssignment sym (getVarType typeSpec) initValue
+                                arrayValue <- createConstantArray sym dimensions coercedValue
+                                pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }]
+                            )
+                            (\haltedState -> pure [haltedState])
             )
+            (\haltedState -> pure [haltedState])
     where
         arrayType = VarArray (getVarType typeSpec) (length (alistList dimensionListInfo))
 
@@ -738,7 +739,7 @@ execAssign sym flags lhs rhs state =
             execVariableAssign sym flags span name rhs state
 
         ExpSubscript _ann span baseExpr indicesInfo ->
-            execArrayElementAssign sym flags span baseExpr (alistList indicesInfo) rhs state
+            execArraySubscriptAssign sym flags span baseExpr (alistList indicesInfo) rhs state
 
 
         _ -> error "Left-hand side of assignment must be a variable"
@@ -786,8 +787,8 @@ execScalarAssign sym flags name binding rhs state = do
         (\haltedState -> pure [haltedState])
                     
 
--- only supports single element assigns for now
-execArrayElementAssign ::
+--supports scalar element and array-section assignment targets
+execArraySubscriptAssign ::
     ExprBuilder t st fs
     -> ExecutorFlags
     -> SrcSpan
@@ -797,49 +798,91 @@ execArrayElementAssign ::
     -> SymState (ExprBuilder t st fs) a
     -> IO [SymState (ExprBuilder t st fs) a]
 
-execArrayElementAssign sym flags span baseExpr indexExprs rhs state = do
+execArraySubscriptAssign sym flags span baseExpr indexExprs rhs state = do
     name <-
         case baseExpr of
             ExpValue _ann _span (ValVariable arrayName) -> pure arrayName
             _ -> error "Unsupported array assignment target"
 
-    case Map.lookup name (env state) of
-        Nothing -> error $ "Assignment to undeclared array: " ++ name
-        Just _ -> pure ()
+    initialBinding <-
+        case Map.lookup name (env state) of
+            Nothing -> error $ "Assignment to undeclared array: " ++ name
+            Just binding -> pure binding
 
-    bindBranches
-        (evalArrayIndices sym flags indexExprs state)
-        (\outcome ->
-            case outcome of
-                (Nothing, haltedState) -> pure [haltedState]
-                (Just indices, state1) ->
+    initialArray <-
+        case varValue initialBinding of
+            Nothing -> error $ "Assignment to uninitialised array: " ++ name
+            Just value -> pure value
+
+    let dimensions =
+            case initialArray of
+                SomeIntArray record -> arrayDimensions record
+                SomeRealArray record -> arrayDimensions record
+                SomeBoolArray record -> arrayDimensions record
+                _ -> error $ "Assignment target is not an array: " ++ name
+
+    bindValueOutcomes
+        (evalArraySubscripts sym flags dimensions indexExprs state)
+        (\(subscripts, state1) ->
+            bindValueOutcomes
+                (evalExpr sym flags rhs state1)
+                (\(rhsBeforeCoerce, state2) -> do
+                    currentBinding <-
+                        case Map.lookup name (env state2) of
+                            Nothing -> error $ "Array disappeared during evaluation: " ++ name
+                            Just binding -> pure binding
+
+                    currentArray <-
+                        case varValue currentBinding of
+                            Nothing -> error $ "Assignment to uninitialised array: " ++ name
+                            Just value -> pure value
+
+                    rhsAfterCoerce <-
+                        case rhsBeforeCoerce of
+                            SomeIntArray _ -> pure rhsBeforeCoerce
+                            SomeRealArray _ -> pure rhsBeforeCoerce
+                            SomeBoolArray _ -> pure rhsBeforeCoerce
+                            _ -> coerceOnAssignment sym (arrayElementType currentArray) rhsBeforeCoerce
+
                     bindValueOutcomes
-                        (evalExpr sym flags rhs state1)
-                        (\(rhsBeforeCoerce, state2) -> do
-                            currentBinding <-
-                                case Map.lookup name (env state2) of
-                                    Nothing -> error $ "Array disappeared during evaluation: " ++ name
-                                    Just binding -> pure binding
-
-                            currentArray <-
-                                case varValue currentBinding of
-                                    Nothing -> error $ "Assignment to uninitialised array: " ++ name
-                                    Just value -> pure value
-
-                            rhsAfterCoerce <- coerceOnAssignment sym (arrayElementType currentArray) rhsBeforeCoerce
-
-                            bindValueOutcomes
-                                (updateSomeArray sym flags span currentArray indices rhsAfterCoerce state2)
-                                (\(updatedArrayValue, state3) ->
-                                    let updatedBinding = currentBinding { varValue = Just updatedArrayValue }
-                                        finalState = state3 { env = Map.insert name updatedBinding (env state3) }
-                                    in pure [finalState]
-                                )
-                                (\haltedState -> pure [haltedState])
+                        (if not (hasArraySection subscripts) --single element update
+                            then
+                                updateSomeArray
+                                    sym
+                                    flags
+                                    span
+                                    currentArray
+                                    (scalarIndices subscripts)
+                                    rhsAfterCoerce
+                                    state2
+                            else
+                                updateArraySection
+                                    sym
+                                    flags
+                                    span
+                                    currentArray
+                                    subscripts
+                                    rhsAfterCoerce
+                                    state2
+                        )
+                        (\(updatedArrayValue, state3) ->
+                            let updatedBinding = currentBinding { varValue = Just updatedArrayValue }
+                                finalState = state3 { env = Map.insert name updatedBinding (env state3) }
+                            in pure [finalState]
                         )
                         (\haltedState -> pure [haltedState])
+                )
+                (\haltedState -> pure [haltedState])
         )
-    
+        (\haltedState -> pure [haltedState])
+
+    where
+        scalarIndices subscripts =
+            case subscripts of
+                [] -> []
+                ScalarSubscript index : remaining -> index : scalarIndices remaining
+                SectionSubscript {} : _ ->
+                    error "Section passed to scalar array update"
 
 
 execWholeArrayAssign ::
@@ -1211,7 +1254,7 @@ execCaseClauses sym flags selectorValue cases maybeDefaultBlocks state =
             SomeExpr (ExprBuilder t st fs) ->
             [Index a] ->
             SymState (ExprBuilder t st fs) a ->
-            IO [ValueOutcome (ExprBuilder t st fs) a]
+            IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
         evalCaseSelectors sym flags selectorValue caseSelectors state =
             case caseSelectors of
                 [] -> pure [ValueAndStateProduced (SomeBool (falsePred sym)) state]
@@ -1244,7 +1287,7 @@ execCaseClauses sym flags selectorValue cases maybeDefaultBlocks state =
             SomeExpr (ExprBuilder t st fs) ->
             Index a ->
             SymState (ExprBuilder t st fs) a ->
-            IO [ValueOutcome (ExprBuilder t st fs) a]
+            IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
         evalCaseSelector sym flags selectorValue caseSelector state =
             case caseSelector of
                 IxSingle _ann _span _name caseExpr ->
@@ -1282,7 +1325,7 @@ execCaseClauses sym flags selectorValue cases maybeDefaultBlocks state =
             Maybe (Expression a) ->
             Maybe (Expression a) ->
             SymState (ExprBuilder t st fs) a ->
-            IO [ValueOutcome (ExprBuilder t st fs) a]
+            IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
         evalCaseRange sym flags selectorValue maybeLowerExpr maybeUpperExpr state =
             case selectorValue of
                 SomeInt selectorInteger -> evalLowerBound selectorInteger state
@@ -1327,7 +1370,7 @@ evalFunctionCall ::
     -> Expression a
     -> [Argument a]
     -> SymState (ExprBuilder t st fs) a
-    -> IO [ValueOutcome (ExprBuilder t st fs) a]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 evalFunctionCall sym flags functionExpr arguments callerState = do
     functionName <-
         case functionExpr of
@@ -1340,20 +1383,18 @@ evalFunctionCall sym flags functionExpr arguments callerState = do
                 Nothing -> error $ "Unknown function: " ++ functionName
 
     let matchedArguments = matchProcedureArguments (functionParameters functionDef) arguments
-    bindBranches
+    bindValueOutcomes
         (evalMatchedFunctionArguments sym flags matchedArguments callerState)
-        (\outcome ->
-            case outcome of
-                (Nothing, haltedState) -> pure [ValueComputationHaltedState haltedState]
-                (Just evaluatedArguments, callerState1) ->
-                    execFunctionDefinition
-                        sym
-                        flags
-                        functionName
-                        functionDef
-                        evaluatedArguments
-                        callerState1
+        (\(evaluatedArguments, callerState1) ->
+            execFunctionDefinition
+                sym
+                flags
+                functionName
+                functionDef
+                evaluatedArguments
+                callerState1
         )
+        (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
 
 execFunctionDefinition :: 
@@ -1363,7 +1404,7 @@ execFunctionDefinition ::
     -> ProcedureDef a 
     -> [(VarName, SrcSpan, SomeExpr (ExprBuilder t st fs))]
     -> SymState (ExprBuilder t st fs) a 
-    -> IO [ValueOutcome (ExprBuilder t st fs) a]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 
 execFunctionDefinition sym flags functionName functionDef argumentValues callerState =
     case functionDef of
@@ -1435,7 +1476,7 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
             VarName -> 
             SymState (ExprBuilder t st fs) a -> 
             SymState (ExprBuilder t st fs) a -> 
-            IO (ValueOutcome (ExprBuilder t st fs) a)
+            IO (ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs)))
         returnFunctionResult resultName callerState localState =
             case Map.lookup resultName (env localState) of
                 Nothing -> error $ "Function result variable is not declared: " ++ resultName
@@ -1478,21 +1519,19 @@ evalSubroutineCall sym flags subroutineExpr arguments callerState = do
             Nothing -> error $ "Unknown subroutine: " ++ subroutineName
 
     let matchedArguments = matchProcedureArguments (subroutineParameters subroutineDef) arguments
-    bindBranches
+    bindValueOutcomes
         (evalMatchedSubroutineArguments sym flags matchedArguments callerState)
-        (\outcome ->
-            case outcome of
-                (Nothing, haltedState) -> pure [haltedState]
-                (Just evaluatedArguments, callerState1) ->
-                    execSubroutineDefinition
-                        sym
-                        flags
-                        subroutineName
-                        subroutineDef
-                        matchedArguments
-                        evaluatedArguments
-                        callerState1
+        (\(evaluatedArguments, callerState1) ->
+            execSubroutineDefinition
+                sym
+                flags
+                subroutineName
+                subroutineDef
+                matchedArguments
+                evaluatedArguments
+                callerState1
         )
+        (\haltedState -> pure [haltedState])
 
 
 

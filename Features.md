@@ -107,6 +107,8 @@
 - Symbolic array indices
 - Multidimensional indexing
 - Bounds checking for every dimension
+- Subscript-triplet sections with omitted bounds and positive or negative strides
+- Rank reduction for matrix rows and columns, e.g. `matrix(i, :)` and `matrix(:, j)`
 
 
 ### Array Updates
@@ -114,6 +116,8 @@
 - Updating a single array element
 - Symbolic update indices
 - Bounds checking for every dimension
+- Assigning arrays or scalar values to array sections
+- Shape checking for section-to-array and array-to-section assignment
 
 Examples:
 
@@ -152,9 +156,7 @@ The following constructor features are not currently supported:
 
 ## Currently Unsupported Features
 
-- Array sections and slices
-- Assigning a matrix row or column to a vector
-- `IxRange` expressions for assign, e.g. `a(1:5)`
+- Vector-subscript array sections, e.g. `a([1, 3, 5])`
 - Implied-`do` array constructors
 - Nested or array-valued constructor elements
 - Element-wise array arithmetic

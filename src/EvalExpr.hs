@@ -57,8 +57,8 @@ bindBranches computation continuation = do
 
 bindValueOutcomes
     :: Monad m
-    => m [ValueOutcome sym a]
-    -> ((SomeExpr sym, SymState sym a) -> m [b])
+    => m [ValueOutcome sym a value]
+    -> ((value, SymState sym a) -> m [b])
     -> (SymState sym a -> m [b])
     -> m [b]
 bindValueOutcomes computation continuation haltedContinuation =
@@ -80,7 +80,7 @@ evalExpr :: ExprBuilder t st fs
     -> ExecutorFlags
     -> Expression a
     -> SymState (ExprBuilder t st fs) a
-    -> IO [ValueOutcome (ExprBuilder t st fs) a]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 
 evalExpr sym flags expr state = 
     case expr of
@@ -119,7 +119,7 @@ evalValue :: ExprBuilder t st fs
     -> SrcSpan
     -> Value a
     -> SymState (ExprBuilder t st fs) a
-    -> IO [ValueOutcome (ExprBuilder t st fs) a]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 
 evalValue sym _flags span val state =
     case val of
@@ -171,7 +171,7 @@ evalBinary :: ExprBuilder t st fs
     -> SomeExpr (ExprBuilder t st fs)
     -> SomeExpr (ExprBuilder t st fs)
     -> SymState (ExprBuilder t st fs) a
-    -> IO [ValueOutcome (ExprBuilder t st fs) a]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 
 evalBinary sym _flags span op v1 v2 state =
     case op of
@@ -328,7 +328,7 @@ evalUnary :: IsSymExprBuilder sym
     -> UnaryOp
     -> SomeExpr sym
     -> SymState sym a
-    -> IO [ValueOutcome sym a]
+    -> IO [ValueOutcome sym a (SomeExpr sym)]
 
 evalUnary sym flags op v state =
     case op of
@@ -405,7 +405,7 @@ coerceArrayOnAssignment :: ExprBuilder t st fs
     -> SomeExpr (ExprBuilder t st fs)
     -> SomeExpr (ExprBuilder t st fs)
     -> SymState (ExprBuilder t st fs) a
-    -> IO [ValueOutcome (ExprBuilder t st fs) a]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 coerceArrayOnAssignment sym _flags span targetArray sourceValue state =
     case (targetArray, sourceValue) of
         (SomeIntArray targetRecord, SomeIntArray sourceRecord) ->
@@ -423,22 +423,25 @@ coerceArrayOnAssignment sym _flags span targetArray sourceValue state =
             state1 <- addObligationAndAssume sym ArrayShape span shapePredicate state
             case executionStatus state1 of
                 ExecutionHalted _ -> pure [ValueComputationHaltedState state1]
-                ExecutionComplete -> pure [ValueAndStateProduced sourceArray state1]
+                ExecutionComplete ->
+                    pure
+                        [ ValueAndStateProduced
+                            (preserveTargetDimensions targetDims sourceArray)
+                            state1
+                        ]
 
-        arrayShapesEqual sym targetDims sourceDims =
-            case (targetDims, sourceDims) of
-                ([], []) -> pure (truePred sym)
-
-                (targetDim : remainingTargets, sourceDim : remainingSources) -> do
-
-                    targetExtent <- dimensionExtent sym targetDim
-                    sourceExtent <- dimensionExtent sym sourceDim
-
-                    thisDimensionEqual <- intEq sym targetExtent sourceExtent
-                    remainingEqual <- arrayShapesEqual sym remainingTargets remainingSources
-                    andPred sym thisDimensionEqual remainingEqual
-
-                _ -> pure (falsePred sym)
+        --without this, copyArray returned the source ArrayRecord directly, which
+        --also copied the source dimension onto the target, leading to indexing bugs
+        --this was unintended and has been fixed now
+        preserveTargetDimensions targetDims sourceArray =
+            case sourceArray of
+                SomeIntArray record ->
+                    SomeIntArray record { arrayDimensions = targetDims }
+                SomeRealArray record ->
+                    SomeRealArray record { arrayDimensions = targetDims }
+                SomeBoolArray record ->
+                    SomeBoolArray record { arrayDimensions = targetDims }
+                _ -> error "Whole-array assignment source is not an array"
 
             
 
@@ -449,26 +452,58 @@ evalArraySubscript ::
     -> Expression a
     -> [Index a]
     -> SymState (ExprBuilder t st fs) a
-    -> IO [ValueOutcome (ExprBuilder t st fs) a]
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 
 evalArraySubscript sym flags span baseExpr indicesExprs state = do
-    arrayExpr <-
+    arrayName <-
         case baseExpr of
-            ExpValue _ann _span (ValVariable name) ->
-                case Map.lookup name (env state) of
-                    Just binding ->
-                        case varValue binding of
-                            Just value -> pure value
-                            Nothing -> error $ "(wtf): " ++ name
-                    Nothing -> error $ "Unknown array variable: " ++ name
-            _ ->
-                error "Unsupported array base expression"
+            ExpValue _ann _span (ValVariable name) -> pure name
+            _ -> error "Unsupported array base expression"
 
-    indexResults <- evalArrayIndices sym flags indicesExprs state
-    concat <$> mapM
-        (\(maybeIndices, state1) ->
-            case maybeIndices of
-                Nothing -> pure [ValueComputationHaltedState state1]
-                Just indices -> lookupSomeArray sym flags span arrayExpr indices state1
+    initialArrayExpr <- lookupArrayValue arrayName state
+    let dimensions =
+            case initialArrayExpr of
+                SomeIntArray record -> arrayDimensions record
+                SomeRealArray record -> arrayDimensions record
+                SomeBoolArray record -> arrayDimensions record
+                _ -> error $ "Subscripted variable is not an array: " ++ arrayName
+
+    bindValueOutcomes
+        (evalArraySubscripts sym flags dimensions indicesExprs state)
+        (\(subscripts, state1) -> do
+            currentArrayExpr <- lookupArrayValue arrayName state1
+            if not (hasArraySection subscripts)
+                then
+                    lookupSomeArray
+                        sym
+                        flags
+                        span
+                        currentArrayExpr
+                        (scalarIndices subscripts)
+                        state1
+                else
+                    createArraySection
+                        sym
+                        flags
+                        span
+                        currentArrayExpr
+                        subscripts
+                        state1
         )
-        indexResults
+        (\haltedState -> pure [ValueComputationHaltedState haltedState])
+
+    where
+        lookupArrayValue name currentState =
+            case Map.lookup name (env currentState) of
+                Just binding ->
+                    case varValue binding of
+                        Just value -> pure value
+                        Nothing -> error $ "Array variable is uninitialised: " ++ name
+                Nothing -> error $ "Unknown array variable: " ++ name
+
+        scalarIndices subscripts =
+            case subscripts of
+                [] -> []
+                ScalarSubscript index : remaining -> index : scalarIndices remaining
+                SectionSubscript {} : _ ->
+                    error "Internal error: section passed to scalar array lookup"

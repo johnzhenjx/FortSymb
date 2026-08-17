@@ -69,7 +69,7 @@ data ProcedureDef a
 type ProcedureEnv a = Map String (ProcedureDef a)
 
 
-data ObligationKind = UserAssertion | DivByZero | ArrayBounds | ArrayShape | IncrementStepNonZero | UninitialisedRead
+data ObligationKind = UserAssertion | DivByZero | ArrayBounds | ArrayShape | IncrementStepNonZero | ArraySectionStrideNonZero | UninitialisedRead
     deriving (Eq, Ord, Show)
 
 data ExecutorFlags = ExecutorFlags 
@@ -103,8 +103,8 @@ data HaltReason
         }
     deriving (Show)
 
-data ValueOutcome sym a
-    = ValueAndStateProduced (SomeExpr sym) (SymState sym a)
+data ValueOutcome sym a value
+    = ValueAndStateProduced value (SymState sym a)
     | ValueComputationHaltedState (SymState sym a)
 
 data SymState sym a = SymState
