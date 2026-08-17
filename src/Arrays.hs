@@ -4,14 +4,10 @@ import Types
 import {-# SOURCE #-} EvalExpr (evalExpr, coerceOnAssignment, bindValueOutcomes)
 import SymbolicPath
 
-import Data.Map (Map)
-import qualified Data.Map as Map
-
 import qualified Data.Parameterized.Context as Ctx
 
 import What4.BaseTypes
 import What4.Interface
-import What4.Symbol
 import What4.Expr.Builder
 
 import Language.Fortran.AST

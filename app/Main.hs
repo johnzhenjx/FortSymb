@@ -32,11 +32,12 @@ import Options.Applicative
 
 
 
-parseCliOptions :: Parser (FilePath, ExecutorFlags)
+parseCliOptions :: Parser (FilePath, ExecutorFlags, ReportOptions)
 parseCliOptions = do
     filePath <- argument str (metavar "FILE" <> help "Path of Fortran source file")
     flags <- parseExecutorFlags
-    pure (filePath, flags)
+    reportOptions <- parseReportOptions
+    pure (filePath, flags, reportOptions)
 
 parseExecutorFlags :: Parser ExecutorFlags
 parseExecutorFlags = do
@@ -50,7 +51,18 @@ parseExecutorFlags = do
         }
 
 
-cliOptionsInfo :: ParserInfo (FilePath, ExecutorFlags)
+parseReportOptions :: Parser ReportOptions
+parseReportOptions = do
+    showValidInternal <- switch
+        ( long "show-valid-internal-obligations"
+            <> help "Show valid internal proof obligations (DivByZero, ArrayBounds, etc)"
+        )
+    pure ReportOptions
+        { showValidInternalObligations = showValidInternal
+        }
+
+
+cliOptionsInfo :: ParserInfo (FilePath, ExecutorFlags, ReportOptions)
 cliOptionsInfo = info (parseCliOptions <**> helper)
         ( fullDesc
         <> progDesc "Symbolic executor for Fortran programs"
@@ -85,7 +97,7 @@ preprocessAssertions source =
 
 main :: IO ()
 main = do
-    (filePath, flags) <- execParser cliOptionsInfo
+    (filePath, flags, reportOptions) <- execParser cliOptionsInfo
     
     contents <- B.readFile filePath
     let transformedSource = B.pack (preprocessAssertions (B.unpack contents))
@@ -114,4 +126,4 @@ main = do
 
                     resultStates <- execProgramFile sym flags ast
                     obligationResults <- evaluateAllStateObligations sym resultStates
-                    printStatesWithObligationResults "feasible" resultStates obligationResults
+                    printStatesWithObligationResults reportOptions "feasible" resultStates obligationResults

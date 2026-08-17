@@ -15,7 +15,6 @@ import Prelude hiding (EQ, LT, GT)
 
 import Types
 import Arrays
-import Procedures
 import Executor
 import SymbolicPath
 

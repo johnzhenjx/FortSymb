@@ -30,6 +30,11 @@ import What4.Interface
     )
 
 
+data ReportOptions = ReportOptions
+    { showValidInternalObligations :: Bool
+    }
+
+
 styledText :: [SGR] -> String -> IO String
 styledText style text = do
     enabled <- colourEnabled
@@ -160,6 +165,15 @@ printState ::
     SymState sym a ->
     IO ()
 printState state = do
+    printStateDetails state
+    printObligations (reverse (obligations state))
+
+
+printStateDetails ::
+    IsExpr (SymExpr sym) =>
+    SymState sym a ->
+    IO ()
+printStateDetails state = do
     statusText <-
         styledText
             (case executionStatus state of
@@ -175,8 +189,6 @@ printState state = do
         "Path conditions"
         "<true>"
         (reverse (pathCond state))
-
-    printObligations (reverse (obligations state))
 
 
 printEnvironment ::
@@ -283,11 +295,22 @@ printObligations ::
     [Obligation sym] ->
     IO ()
 printObligations obligationsToPrint = do
+    printNumberedObligations (numbered obligationsToPrint) 0
+
+
+printNumberedObligations ::
+    IsExpr (SymExpr sym) =>
+    [(Int, Obligation sym)] ->
+    Int ->
+    IO ()
+printNumberedObligations numberedObligations hiddenCount = do
     printSectionHeading 2 "Proof obligations"
 
-    case numbered obligationsToPrint of
-        [] -> printSecondaryLine 4 "<none>"
-        numberedObligations -> mapM_ printObligation numberedObligations
+    case numberedObligations of
+        [] -> printSecondaryLine 4 (if hiddenCount == 0 then "<none>" else "<none shown>")
+        _ -> mapM_ printObligation numberedObligations
+
+    printHiddenObligationCount hiddenCount
 
     putStrLn ""
   where
@@ -333,20 +356,27 @@ printAllObligationResults stateResults =
 
 printStatesWithObligationResults ::
     IsExpr (SymExpr sym) =>
+    ReportOptions ->
     String ->
     [SymState sym a] ->
     [[(Obligation sym, ObligationResult)]] ->
     IO ()
-printStatesWithObligationResults label states stateResults = do
+printStatesWithObligationResults reportOptions label states stateResults = do
     printReportHeading label (length states)
     printPairedStates (1 :: Int) states stateResults
   where
     printPairedStates _ [] [] = pure ()
 
     printPairedStates index (state : remainingStates) (results : remainingResults) = do
+        let numberedResults = numbered results
+            visibleResults = filter (shouldPrintObligationResult reportOptions . snd) numberedResults
+            hiddenCount = length numberedResults - length visibleResults
         printStateHeading index
-        printState state
-        printObligationResults results
+        printStateDetails state
+        printNumberedObligations
+            (map (\(number, (obligation, _result)) -> (number, obligation)) visibleResults)
+            hiddenCount
+        printNumberedObligationResults visibleResults hiddenCount
         printPairedStates (index + 1) remainingStates remainingResults
 
     printPairedStates _ _ _ =
@@ -357,13 +387,51 @@ printObligationResults ::
     [(Obligation sym, ObligationResult)] ->
     IO ()
 printObligationResults results = do
+    printNumberedObligationResults (numbered results) 0
+
+
+printNumberedObligationResults ::
+    [(Int, (Obligation sym, ObligationResult))] ->
+    Int ->
+    IO ()
+printNumberedObligationResults numberedResults hiddenCount = do
     printSectionHeading 2 "Obligation results"
 
-    case numbered results of
-        [] -> printSecondaryLine 4 "<none>"
-        numberedResults -> mapM_ printObligationResult numberedResults
+    case numberedResults of
+        [] -> printSecondaryLine 4 (if hiddenCount == 0 then "<none>" else "<none shown>")
+        _ -> mapM_ printObligationResult numberedResults
+
+    printHiddenObligationCount hiddenCount
 
     putStrLn ""
+
+
+shouldPrintObligationResult ::
+    ReportOptions ->
+    (Obligation sym, ObligationResult) ->
+    Bool
+shouldPrintObligationResult reportOptions (obligation, result) =
+    case result of
+        ObligationInvalid _ -> True
+        ObligationValid ->
+            obligationKind obligation == UserAssertion
+                || showValidInternalObligations reportOptions
+
+
+printHiddenObligationCount :: Int -> IO ()
+printHiddenObligationCount hiddenCount =
+    if hiddenCount == 0
+        then pure ()
+        else
+            printStyledLine
+                secondaryStyle
+                4
+                (show hiddenCount ++ " valid internal " ++ noun ++ " hidden")
+  where
+    noun =
+        if hiddenCount == 1
+            then "obligation"
+            else "obligations"
 
 
 printObligationResult ::
