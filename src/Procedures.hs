@@ -26,7 +26,7 @@ import {-# SOURCE #-} EvalExpr
 extractProcedureDef :: ProgramUnit a -> Maybe (String, ProcedureDef a) 
 extractProcedureDef programUnit =
     case programUnit of
-        --no subprograms or recursion for now
+        --nested internal subprograms are not collected yet
         PUFunction
             _ann
             _span

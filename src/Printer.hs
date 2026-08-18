@@ -153,6 +153,15 @@ showHaltReason reason =
                 ++ " at "
                 ++ show sourceSpan
 
+        ProcedureCallDepthLimitReached procedureName callDepth callDepthLimit ->
+            "procedure call-depth limit reached while calling "
+                ++ procedureName
+                ++ " at depth "
+                ++ show callDepth
+                ++ " (limit "
+                ++ show callDepthLimit
+                ++ ")"
+
 
 printStates ::
     IsSymExprBuilder sym =>

@@ -43,12 +43,26 @@ parseExecutorFlags :: Parser ExecutorFlags
 parseExecutorFlags = do
     assertionsEnabled <- flag True False
         ( long "no-user-asserts" <> help "Disable proof obligations generated from user assertions" )
-    maxUnroll <- option auto 
+    maxUnroll <- option nonNegativeIntReader
         ( long "max-unroll" <> metavar "N" <> value 10 <> showDefault <> help "Maximum number of DO-loop unrollings" )
+    maxCallDepth <- option nonNegativeIntReader
+        ( long "max-call-depth" <> metavar "N" <> value 10 <> showDefault <> help "Maximum nested procedure-call depth" )
     pure ExecutorFlags
         { userAssertionEnabled = assertionsEnabled
         , maxDoLoopUnroll = maxUnroll
+        , maxProcedureCallDepth = maxCallDepth
         }
+
+
+nonNegativeIntReader :: ReadM Int
+nonNegativeIntReader =
+    eitherReader
+        (\text ->
+            case reads text of
+                [(parsedValue, "")]
+                    | parsedValue >= 0 -> Right parsedValue
+                _ -> Left "expected a non-negative integer"
+        )
 
 
 parseReportOptions :: Parser ReportOptions

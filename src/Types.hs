@@ -91,7 +91,8 @@ data ObligationKind = UserAssertion | DivByZero | ArrayBounds | ArrayShape | Inc
 data ExecutorFlags = ExecutorFlags 
     {
         userAssertionEnabled :: Bool,
-        maxDoLoopUnroll :: Int
+        maxDoLoopUnroll :: Int,
+        maxProcedureCallDepth :: Int
     }
         
 
@@ -117,6 +118,11 @@ data HaltReason
         { unsatObligationKind :: ObligationKind
         , unsatObligationSpan :: SrcSpan
         }
+    | ProcedureCallDepthLimitReached
+        { incompleteProcedureName :: String
+        , incompleteCallDepth :: Int
+        , incompleteCallDepthLimit :: Int
+        }
     deriving (Show)
 
 data ValueOutcome sym a value
@@ -129,6 +135,7 @@ data SymState sym a = SymState
       obligations :: [Obligation sym],
       freshCount :: Int,
       procedureEnv :: ProcedureEnv a,
+      procedureCallDepth :: Int,
       executionStatus :: ExecutionStatus 
     }
 
@@ -140,6 +147,7 @@ emptyState procEnv = SymState
       obligations = [],
       freshCount = 0,
       procedureEnv = procEnv,
+      procedureCallDepth = 0,
       executionStatus = ExecutionComplete
     }
 

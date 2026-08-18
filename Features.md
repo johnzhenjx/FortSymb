@@ -150,8 +150,10 @@ The following constructor features are not currently supported:
 
 
 ### Functions
-- FUNCTIONS WORK WITH NAMED + POSITIONAL (no subprograms or recursion for now)
-- subroutines also work (disregarding intents for now)
+- FUNCTIONS WORK WITH NAMED + POSITIONAL (no subprograms )
+- subroutines also work
+- intents work
+- recursion up to user-specified max call depth
 
 
 ## Currently Unsupported Features

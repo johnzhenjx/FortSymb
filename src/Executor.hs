@@ -1368,64 +1368,71 @@ execFunctionDefinition ::
     -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 
 execFunctionDefinition sym flags functionName functionDef argumentValues callerState =
-    case functionDef of
-        FunctionDef {
-            functionResult = resultName, 
-            functionBody = body, 
-            functionMaybeReturnTypeSpec = maybeReturnTypeSpec
-        } -> do
-            -- need a fresh env for local scope
-            let initialLocalState = callerState { env = Map.empty }
+    if procedureCallDepth callerState >= maxProcedureCallDepth flags
+        then
+            pure [ ValueComputationHaltedState (procedureDepthLimitState flags functionName callerState) ]
+        else case functionDef of
+            FunctionDef {
+                functionResult = resultName, 
+                functionBody = body, 
+                functionMaybeReturnTypeSpec = maybeReturnTypeSpec
+            } -> do
+                -- need a fresh env for local scope
+                let initialLocalState =
+                        callerState
+                            { env = Map.empty
+                            , procedureCallDepth = procedureCallDepth callerState + 1
+                            }
 
-            -- first split blocks into declaration blocks and other blocks
-            --      "span, applied to a predicate p and a list xs, returns a tuple where 
-            --      first element is longest prefix (possibly empty) of xs of elements 
-            --      that satisfy p and second element is the remainder of the list"
-            let (declarationBlocks, executableBlocks) =
-                    span 
-                    (\block -> case block of
-                        BlStatement _ann _span _label StDeclaration{} -> True
-                        BlStatement _ann _span _label StImplicit{} -> True
-                        BlStatement _ann _span _label StIntent{} -> True
-                        _ -> False
-                    ) 
-                    body
+                -- first split blocks into declaration blocks and other blocks
+                --      "span, applied to a predicate p and a list xs, returns a tuple where 
+                --      first element is longest prefix (possibly empty) of xs of elements 
+                --      that satisfy p and second element is the remainder of the list"
+                let (declarationBlocks, executableBlocks) =
+                        span 
+                        (\block -> case block of
+                            BlStatement _ann _span _label StDeclaration{} -> True
+                            BlStatement _ann _span _label StImplicit{} -> True
+                            BlStatement _ann _span _label StIntent{} -> True
+                            _ -> False
+                        ) 
+                        body
 
-            bindBranches
-                (execBlocks sym flags declarationBlocks initialLocalState)
-                (\declaredLocalState ->
-                    case executionStatus declaredLocalState of
-                        ExecutionHalted _ -> pure [ValueComputationHaltedState (restoreCallerState callerState declaredLocalState)]
-                        ExecutionComplete ->
-                            bindBranches
-                                (bindProcedureParameters sym flags argumentValues callerState declaredLocalState)
-                                (\boundLocalState ->
-                                    case executionStatus boundLocalState of
-                                        ExecutionHalted _ -> pure [ValueComputationHaltedState (restoreCallerState callerState boundLocalState)]
-                                        ExecutionComplete -> do
-                                            returnBindingLocalState <-
-                                                case maybeReturnTypeSpec of
-                                                    Nothing -> pure boundLocalState
-                                                    Just returnTypeSpec -> do
-                                                        let returnBinding = VarBinding (getVarType returnTypeSpec) Nothing Nothing
-                                                        pure boundLocalState { env = Map.insert resultName returnBinding (env boundLocalState) }
+                bindBranches
+                    (execBlocks sym flags declarationBlocks initialLocalState)
+                    (\declaredLocalState ->
+                        case executionStatus declaredLocalState of
+                            ExecutionHalted _ -> pure [ValueComputationHaltedState (restoreCallerState callerState declaredLocalState)]
+                            ExecutionComplete ->
+                                bindBranches
+                                    (bindProcedureParameters sym flags argumentValues callerState declaredLocalState)
+                                    (\boundLocalState ->
+                                        case executionStatus boundLocalState of
+                                            ExecutionHalted _ -> pure [ValueComputationHaltedState (restoreCallerState callerState boundLocalState)]
+                                            ExecutionComplete -> do
+                                                returnBindingLocalState <-
+                                                    case maybeReturnTypeSpec of
+                                                        Nothing -> pure boundLocalState
+                                                        Just returnTypeSpec -> do
+                                                            let returnBinding = VarBinding (getVarType returnTypeSpec) Nothing Nothing
+                                                            pure boundLocalState { env = Map.insert resultName returnBinding (env boundLocalState) }
 
-                                            bindBranches
-                                                (execBlocks sym flags executableBlocks returnBindingLocalState)
-                                                (\localState ->
-                                                    case executionStatus localState of
-                                                        ExecutionHalted _ -> pure [ValueComputationHaltedState (restoreCallerState callerState localState)]
-                                                        ExecutionComplete -> do
-                                                            returnFunctionResult
-                                                                resultName
-                                                                argumentValues
-                                                                callerState
-                                                                localState
-                                                )
-                                )
-                )
+                                                bindBranches
+                                                    (execBlocks sym flags executableBlocks returnBindingLocalState)
+                                                    (\localState ->
+                                                        case executionStatus localState of
+                                                            ExecutionHalted _ -> pure [ValueComputationHaltedState (restoreCallerState callerState localState)]
+                                                            ExecutionComplete -> do
+                                                                returnFunctionResult
+                                                                    resultName
+                                                                    argumentValues
+                                                                    callerState
+                                                                    localState
+                                                    )
+                                    )
+                    )
 
-        _ -> error $ "Not a function: " ++ functionName
+            _ -> error $ "Not a function: " ++ functionName
 
 
     where
@@ -1514,9 +1521,15 @@ execSubroutineDefinition ::
     -> IO [SymState (ExprBuilder t st fs) a]
 
 execSubroutineDefinition sym flags subroutineName subroutineDef argumentValues callerState =
-    case subroutineDef of
+    if procedureCallDepth callerState >= maxProcedureCallDepth flags
+        then pure [procedureDepthLimitState flags subroutineName callerState]
+        else case subroutineDef of
         SubroutineDef { subroutineBody = body } -> do
-            let initialLocalState = callerState { env = Map.empty }
+            let initialLocalState =
+                    callerState
+                        { env = Map.empty
+                        , procedureCallDepth = procedureCallDepth callerState + 1
+                        }
 
             let (declarationBlocks, executableBlocks) =
                     span 
@@ -1549,7 +1562,6 @@ execSubroutineDefinition sym flags subroutineName subroutineDef argumentValues c
                                                 )
                                 )
                 )
-
         _ -> error $ "Not a subroutine: " ++ subroutineName
 
     where
@@ -1574,4 +1586,21 @@ execSubroutineDefinition sym flags subroutineName subroutineDef argumentValues c
                     , freshCount = freshCount localState
                     }
                 )
+
+
+procedureDepthLimitState ::
+    ExecutorFlags
+    -> String
+    -> SymState sym a
+    -> SymState sym a
+procedureDepthLimitState flags procedureName state =
+    state
+        { executionStatus =
+            ExecutionHalted
+                ProcedureCallDepthLimitReached
+                    { incompleteProcedureName = procedureName
+                    , incompleteCallDepth = procedureCallDepth state + 1
+                    , incompleteCallDepthLimit = maxProcedureCallDepth flags
+                    }
+        }
 
