@@ -23,6 +23,15 @@ import {-# SOURCE #-} EvalExpr
     , evalExpr
     )
 
+
+-- INTENT(IN)     expression or designator; cannot define dummy; no copy-back
+-- INTENT(OUT)    requires definable actual
+-- INTENT(INOUT)  requires definable actual
+-- No INTENT      behavior constrained by the actual argument 
+--                     - if expression, no copy back
+--                     - if designator, copy back
+
+
 extractProcedureDef :: ProgramUnit a -> Maybe (String, ProcedureDef a) 
 extractProcedureDef programUnit =
     case programUnit of
@@ -351,13 +360,24 @@ bindProcedureParameters sym flags argumentValues callerState initialState =
                             Just InOut -> bindInputParameter parameterName span binding maybeArgumentValue rest state
 
                             Nothing ->
-                                case maybeArgumentValue of
-                                    Nothing ->
-                                        let updatedBinding = binding { varValue = Nothing }
-                                            state1 = state { env = Map.insert parameterName updatedBinding (env state) }
-                                        in go state1 rest
-                                    Just _ ->
-                                        bindInputParameter parameterName span binding maybeArgumentValue rest state
+                                case argument of
+                                    ProcedureExpressionArgument {} ->
+                                        bindInputParameter
+                                            parameterName
+                                            span
+                                            (binding { varIntent = Just In })
+                                            maybeArgumentValue
+                                            rest
+                                            state
+
+                                    ProcedureDesignatorArgument {} ->
+                                        case maybeArgumentValue of
+                                            Nothing ->
+                                                let updatedBinding = binding { varValue = Nothing }
+                                                    state1 = state { env = Map.insert parameterName updatedBinding (env state) }
+                                                in go state1 rest
+                                            Just _ ->
+                                                bindInputParameter parameterName span binding maybeArgumentValue rest state
 
         bindInputParameter parameterName span binding maybeArgumentValue rest state =
             case maybeArgumentValue of
@@ -410,31 +430,50 @@ copyProcedureArgumentsBack sym flags arguments localState initialCallerState =
                                 Just In ->
                                     go state rest
 
-                                _ ->
+                                Nothing ->
                                     case argument of
-                                        ProcedureExpressionArgument _ _ _ _ ->
-                                            error $
-                                                "Procedure argument for parameter "
-                                                    ++ parameterName
-                                                    ++ " is not a writable designator"
+                                        ProcedureExpressionArgument {} ->
+                                            go state rest
 
-                                        ProcedureDesignatorArgument _ _ _ designator _ ->
-                                            case varValue parameterBinding of
-                                                Nothing ->
-                                                    bindBranches
-                                                        (clearDesignator sym designator state)
-                                                        (\state1 -> go state1 rest)
+                                        ProcedureDesignatorArgument {} ->
+                                            copyWritableArgumentBack
+                                                parameterName
+                                                parameterBinding
+                                                argument
+                                                rest
+                                                state
 
-                                                Just parameterValue ->
-                                                    bindBranches
-                                                        (writeDesignator
-                                                            sym
-                                                            flags
-                                                            designator
-                                                            parameterValue
-                                                            state
-                                                        )
-                                                        (\state1 -> go state1 rest)
+                                Just Out ->
+                                    copyWritableArgumentBack parameterName parameterBinding argument rest state
+
+                                Just InOut ->
+                                    copyWritableArgumentBack parameterName parameterBinding argument rest state
+
+        copyWritableArgumentBack parameterName parameterBinding argument rest state =
+            case argument of
+                ProcedureExpressionArgument {} ->
+                    error $
+                        "Procedure argument for parameter "
+                            ++ parameterName
+                            ++ " is not a writable designator"
+
+                ProcedureDesignatorArgument _ _ _ designator _ ->
+                    case varValue parameterBinding of
+                        Nothing ->
+                            bindBranches
+                                (clearDesignator sym designator state)
+                                (\state1 -> go state1 rest)
+
+                        Just parameterValue ->
+                            bindBranches
+                                (writeDesignator
+                                    sym
+                                    flags
+                                    designator
+                                    parameterValue
+                                    state
+                                )
+                                (\state1 -> go state1 rest)
 
 
 validateOutputAssociation ::
