@@ -33,6 +33,14 @@ arrayElementType arrayExpr =
         SomeBoolArray _ -> VarBool
         _ -> error "arrayElementType expected an array"
 
+someArrayDimensions :: SomeExpr sym -> [ArrayDimension sym]
+someArrayDimensions arrayExpr =
+    case arrayExpr of
+        SomeIntArray record -> arrayDimensions record
+        SomeRealArray record -> arrayDimensions record
+        SomeBoolArray record -> arrayDimensions record
+        _ -> error "someArrayDimensions expected an array"
+
 dimensionOffset :: IsSymExprBuilder sym 
     => sym 
     -> ArrayDimension sym 
@@ -424,12 +432,7 @@ createArraySection ::
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 createArraySection sym _flags span arrayExpr subscripts state = do
-    let sourceDimensions =
-            case arrayExpr of
-                SomeIntArray record -> arrayDimensions record
-                SomeRealArray record -> arrayDimensions record
-                SomeBoolArray record -> arrayDimensions record
-                _ -> error "Array section base expression is not an array"
+    let sourceDimensions = someArrayDimensions arrayExpr
 
     boundsPredicate <- arraySubscriptsInBounds sym sourceDimensions subscripts
     state1 <- addObligationAndAssume sym ArrayBounds span boundsPredicate state
@@ -533,12 +536,7 @@ updateArraySection ::
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 updateArraySection sym _flags span targetArray subscripts sourceValue state = do
-    let targetDimensions =
-            case targetArray of
-                SomeIntArray record -> arrayDimensions record
-                SomeRealArray record -> arrayDimensions record
-                SomeBoolArray record -> arrayDimensions record
-                _ -> error "Array section assignment target is not an array"
+    let targetDimensions = someArrayDimensions targetArray
 
     boundsPredicate <- arraySubscriptsInBounds sym targetDimensions subscripts
     state1 <- addObligationAndAssume sym ArrayBounds span boundsPredicate state
@@ -683,12 +681,7 @@ clearArraySection ::
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 clearArraySection sym span arrayExpr subscripts state = do
-    let dimensions =
-            case arrayExpr of
-                SomeIntArray record -> arrayDimensions record
-                SomeRealArray record -> arrayDimensions record
-                SomeBoolArray record -> arrayDimensions record
-                _ -> error "Cannot clear a section of a non-array value"
+    let dimensions = someArrayDimensions arrayExpr
 
     inBounds <- arraySubscriptsInBounds sym dimensions subscripts
     state1 <- addObligationAndAssume sym ArrayBounds span inBounds state

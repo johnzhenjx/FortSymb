@@ -33,12 +33,7 @@ evalArrayDesignator sym flags span baseExpr indexExprs state = do
             _ -> error "Unsupported array designator base expression"
 
     arrayValue <- lookupInitialisedValue arrayName state
-    dimensions <-
-        case arrayValue of
-            SomeIntArray record -> pure (arrayDimensions record)
-            SomeRealArray record -> pure (arrayDimensions record)
-            SomeBoolArray record -> pure (arrayDimensions record)
-            _ -> error $ "Subscripted designator is not an array: " ++ arrayName
+    let dimensions = someArrayDimensions arrayValue
 
     bindValueOutcomes
         (evalArraySubscripts sym flags dimensions indexExprs state)
@@ -60,13 +55,13 @@ readDesignator ::
     -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 readDesignator sym flags designator state =
     case designator of
-        VariableDesignator span name ->
-            case Map.lookup name (env state) of
-                Nothing -> error $ "Variable not declared: " ++ name
-                Just (VarBinding _type Nothing _intent) -> do
+        VariableDesignator span name -> do
+            binding <- lookupBinding name state
+            case varValue binding of
+                Nothing -> do
                     haltedState <- addObligationAndAssume sym UninitialisedRead span (falsePred sym) state
                     pure [ValueComputationHaltedState haltedState]
-                Just (VarBinding _type (Just value) _intent) ->
+                Just value ->
                     pure [ValueAndStateProduced value state]
 
         ArraySubscriptDesignator span name subscripts -> do
@@ -96,12 +91,7 @@ validateDesignator sym designator state =
 
         ArraySubscriptDesignator span name subscripts -> do
             arrayValue <- lookupInitialisedValue name state
-            let dimensions =
-                    case arrayValue of
-                        SomeIntArray record -> arrayDimensions record
-                        SomeRealArray record -> arrayDimensions record
-                        SomeBoolArray record -> arrayDimensions record
-                        _ -> error $ "Subscripted designator is not an array: " ++ name
+            let dimensions = someArrayDimensions arrayValue
             inBounds <- arraySubscriptsInBounds sym dimensions subscripts
             state1 <- addObligationAndAssume sym ArrayBounds span inBounds state
             case executionStatus state1 of
@@ -126,13 +116,14 @@ writeDesignator sym flags designator sourceValue state =
             case varType binding of
                 VarArray _ _ -> do
                     targetValue <- lookupInitialisedValue name state
-                    bindValueOutcomes
-                        (coerceArrayOnAssignment
-                            sym flags span targetValue sourceValue state)
-                        (\(coercedValue, state1) ->
-                            pure [replaceBindingValue name binding coercedValue state1]
-                        )
-                        (\haltedState -> pure [haltedState])
+                    case sourceValue of
+                        SomeIntArray _ -> copyWholeArray span name binding targetValue
+                        SomeRealArray _ -> copyWholeArray span name binding targetValue
+                        SomeBoolArray _ -> copyWholeArray span name binding targetValue
+                        _ -> do
+                            coercedValue <- coerceOnAssignment sym (arrayElementType targetValue) sourceValue
+                            filledArray <- createConstantArray sym (someArrayDimensions targetValue) coercedValue
+                            pure [replaceBindingValue name binding filledArray state]
 
                 targetType -> do
                     coercedValue <- coerceOnAssignment sym targetType sourceValue
@@ -162,7 +153,15 @@ writeDesignator sym flags designator sourceValue state =
                     pure [replaceBindingValue name binding updatedArray state1]
                 )
                 (\haltedState -> pure [haltedState])
-
+    where
+        copyWholeArray span name binding targetValue =
+            bindValueOutcomes
+                (coerceArrayOnAssignment
+                    sym flags span targetValue sourceValue state)
+                (\(coercedValue, state1) ->
+                    pure [replaceBindingValue name binding coercedValue state1]
+                )
+                (\haltedState -> pure [haltedState])
 
 clearDesignator ::
     ExprBuilder t st fs

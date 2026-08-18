@@ -9,7 +9,7 @@ import What4.Interface
 import What4.Expr.Builder
 
 import Types
-import {-# SOURCE #-} EvalExpr (getVarType, evalExpr, coerceOnAssignment, coerceArrayOnAssignment, bindBranches, bindValueOutcomes)
+import {-# SOURCE #-} EvalExpr (getVarType, evalExpr, coerceOnAssignment, bindBranches, bindValueOutcomes)
 import Arrays
 import Attributes
 import Designators
@@ -792,35 +792,48 @@ execVariableAssign sym flags span name rhs state =
         Nothing ->
             error $ "Assignment to undeclared variable: " ++ name
 
-        Just binding ->
-            do
+        Just binding -> do
                 ensureBindingWritable name binding
                 case varType binding of
                     VarArray _ _ ->
                         case varValue binding of
                             Nothing -> error $ "Assignment to unallocated array: " ++ name
-                            Just _ -> execWholeArrayAssign sym flags span name binding rhs state
+                            Just _ ->
+                                case rhs of
+                                    ExpInitialisation _ann constructorSpan elementsInfo ->
+                                        execArrayConstructorAssign
+                                            sym
+                                            flags
+                                            constructorSpan
+                                            name
+                                            binding
+                                            (alistList elementsInfo)
+                                            state
+                                    _ ->
+                                        bindValueOutcomes
+                                            (evalExpr sym flags rhs state)
+                                            (\(rhsValue, state1) ->
+                                                writeDesignator
+                                                    sym
+                                                    flags
+                                                    (VariableDesignator span name)
+                                                    rhsValue
+                                                    state1
+                                            )
+                                            (\haltedState -> pure [haltedState])
 
-                    _ -> execScalarAssign sym flags name binding rhs state
-
-
-execScalarAssign ::
-    ExprBuilder t st fs
-    -> ExecutorFlags
-    -> VarName
-    -> VarBinding (ExprBuilder t st fs)
-    -> Expression a
-    -> SymState (ExprBuilder t st fs) a
-    -> IO [SymState (ExprBuilder t st fs) a]
-execScalarAssign sym flags name binding rhs state = do
-    bindValueOutcomes
-        (evalExpr sym flags rhs state)
-        (\(rhsBeforeCoerce, state1) -> do
-            rhsAfterCoerce <- coerceOnAssignment sym (varType binding) rhsBeforeCoerce
-
-            pure [state1 { env = Map.insert name (binding { varValue = Just rhsAfterCoerce }) (env state1) }]
-        )
-        (\haltedState -> pure [haltedState])
+                    _ ->
+                        bindValueOutcomes
+                            (evalExpr sym flags rhs state)
+                            (\(rhsValue, state1) ->
+                                writeDesignator
+                                    sym
+                                    flags
+                                    (VariableDesignator span name)
+                                    rhsValue
+                                    state1
+                            )
+                            (\haltedState -> pure [haltedState])
                     
 
 --supports scalar element and array-section assignment targets
@@ -847,80 +860,43 @@ execArraySubscriptAssign sym flags span baseExpr indexExprs rhs state = do
         (\haltedState -> pure [haltedState])
 
 
-execWholeArrayAssign ::
+execArrayConstructorAssign ::
     ExprBuilder t st fs ->
     ExecutorFlags ->
     SrcSpan ->
     VarName ->
     VarBinding (ExprBuilder t st fs) ->
-    Expression a ->
+    [Expression a] ->
     SymState (ExprBuilder t st fs) a ->
     IO [SymState (ExprBuilder t st fs) a]
-execWholeArrayAssign sym flags span name binding initExpr state = do
+execArrayConstructorAssign sym flags span name binding elements state = do
     arrayExpr <-
         case varValue binding of
             Nothing -> error $ "Assignment to uninitialised array: " ++ name
             Just value -> pure value
 
-    let dimensions =
-            case arrayExpr of
-                SomeIntArray record -> arrayDimensions record
-                SomeRealArray record -> arrayDimensions record
-                SomeBoolArray record -> arrayDimensions record
-                _ -> error $ "Expected array expression: " ++ name
+    let dimensions = someArrayDimensions arrayExpr
 
         elementType =
             case varType binding of
                 VarArray ty _ -> ty
                 _ -> error $ "Expected array binding: " ++ name
 
-    case initExpr of
-        -- e.g. vec = [1, 2, 3]
-        ExpInitialisation _ann constructorSpan elementsInfo ->
-            bindValueOutcomes
-                (createArrayFromConstructor
-                    sym
-                    flags
-                    constructorSpan
-                    name
-                    elementType
-                    dimensions
-                    (alistList elementsInfo)
-                    state
-                )
-                (\(arrayValue, state1) ->
-                    pure [state1 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state1) }]
-                )
-                (\haltedState -> pure [haltedState])
-
-        _ ->
-            bindValueOutcomes
-                (evalExpr sym flags initExpr state)
-                (\(initValue, state1) ->
-                    case initValue of
-                        --array copy assign
-                        SomeIntArray _ -> do
-                            bindValueOutcomes
-                                (coerceArrayOnAssignment sym flags span arrayExpr initValue state1)
-                                (\(arrayValue, state2) -> pure [state2 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state2) }])
-                                (\haltedState -> pure [haltedState])
-                        SomeRealArray _ -> do
-                            bindValueOutcomes
-                                (coerceArrayOnAssignment sym flags span arrayExpr initValue state1)
-                                (\(arrayValue, state2) -> pure [state2 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state2) }])
-                                (\haltedState -> pure [haltedState])
-                        SomeBoolArray _ -> do
-                            bindValueOutcomes
-                                (coerceArrayOnAssignment sym flags span arrayExpr initValue state1)
-                                (\(arrayValue, state2) -> pure [state2 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state2) }])
-                                (\haltedState -> pure [haltedState])
-
-                        _ -> do --constant array assign (every element filled with expr)
-                            coercedValue <- coerceOnAssignment sym elementType initValue
-                            arrayValue <- createConstantArray sym dimensions coercedValue
-                            pure [state1 { env = Map.insert name (binding {varValue = Just arrayValue}) (env state1) }]
-                )
-                (\haltedState -> pure [haltedState])
+    bindValueOutcomes
+        (createArrayFromConstructor
+            sym
+            flags
+            span
+            name
+            elementType
+            dimensions
+            elements
+            state
+        )
+        (\(arrayValue, state1) ->
+            pure [replaceBindingValue name binding arrayValue state1]
+        )
+        (\haltedState -> pure [haltedState])
 
 
 

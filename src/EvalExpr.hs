@@ -1,7 +1,5 @@
 module EvalExpr where
 
-import qualified Data.Map as Map
-
 import Language.Fortran.AST
 import Language.Fortran.Util.Position (SrcSpan)
 import qualified Language.Fortran.AST.Literal.Real as ASTReal
@@ -121,15 +119,10 @@ evalValue :: ExprBuilder t st fs
     -> SymState (ExprBuilder t st fs) a
     -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 
-evalValue sym _flags span val state =
+evalValue sym flags span val state =
     case val of
         ValVariable name ->
-            case Map.lookup name (env state) of
-                Nothing -> error ("Variable not declared: " ++ name)
-                Just (VarBinding _ Nothing _) -> do
-                    haltedState <- addObligationAndAssume sym UninitialisedRead span (falsePred sym) state
-                    pure [ValueComputationHaltedState haltedState]
-                Just (VarBinding _ (Just e) _) -> pure [ValueAndStateProduced e state]
+            readDesignator sym flags (VariableDesignator span name) state
         ValInteger nStr _kind -> do
             e <- intLit sym (read nStr :: Integer)
             pure [ValueAndStateProduced (SomeInt e) state]
