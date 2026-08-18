@@ -126,4 +126,4 @@ main = do
 
                     resultStates <- execProgramFile sym flags ast
                     obligationResults <- evaluateAllStateObligations sym resultStates
-                    printStatesWithObligationResults reportOptions "feasible" resultStates obligationResults
+                    printStatesWithObligationResults sym reportOptions "feasible" resultStates obligationResults

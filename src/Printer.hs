@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Printer where
 
@@ -7,6 +8,7 @@ import Data.Char (toUpper)
 import Data.List (dropWhileEnd)
 import qualified Data.Map as Map
 import Data.Maybe (isJust)
+import qualified Data.Parameterized.Context as Ctx
 import System.Console.ANSI
     ( Color (Cyan, Green, Red)
     , ColorIntensity (Vivid)
@@ -20,12 +22,18 @@ import System.Environment (lookupEnv)
 import System.IO (hIsTerminalDevice, stdout)
 
 import Types
+import Arrays (flattenArrayIndices)
 
 import What4.Expr (ExprBuilder)
 import What4.Interface
     ( BaseBoolType
     , IsExpr
+    , IsSymExprBuilder
     , SymExpr
+    , arrayLookup
+    , asConstantPred
+    , asInteger
+    , intLit
     , printSymExpr
     )
 
@@ -147,33 +155,36 @@ showHaltReason reason =
 
 
 printStates ::
-    IsExpr (SymExpr sym) =>
+    IsSymExprBuilder sym =>
+    sym ->
     String ->
     [SymState sym a] ->
     IO ()
-printStates label states = do
+printStates sym label states = do
     printReportHeading label (length states)
     mapM_ printNumberedState (numbered states)
   where
     printNumberedState (index, state) = do
         printStateHeading index
-        printState state
+        printState sym state
 
 
 printState ::
-    IsExpr (SymExpr sym) =>
+    IsSymExprBuilder sym =>
+    sym ->
     SymState sym a ->
     IO ()
-printState state = do
-    printStateDetails state
+printState sym state = do
+    printStateDetails sym state
     printObligations (reverse (obligations state))
 
 
 printStateDetails ::
-    IsExpr (SymExpr sym) =>
+    IsSymExprBuilder sym =>
+    sym ->
     SymState sym a ->
     IO ()
-printStateDetails state = do
+printStateDetails sym state = do
     statusText <-
         styledText
             (case executionStatus state of
@@ -182,7 +193,7 @@ printStateDetails state = do
             (showExecutionStatus (executionStatus state))
     putStrLn $ "  Status: " ++ statusText
 
-    printEnvironment state
+    printEnvironment sym state
 
     printPredicatesAt
         2
@@ -192,10 +203,12 @@ printStateDetails state = do
 
 
 printEnvironment ::
-    IsExpr (SymExpr sym) =>
+    forall sym a.
+    IsSymExprBuilder sym =>
+    sym ->
     SymState sym a ->
     IO ()
-printEnvironment state = do
+printEnvironment sym state = do
     printSectionHeading 2 "Environment"
 
     case Map.toList (env state) of
@@ -213,39 +226,52 @@ printEnvironment state = do
                 putStrLn $ "    " ++ nameText ++ typeText ++ " = <uninitialised>"
 
             Just value ->
-                printBoundValue nameText typeText value
+                printBoundValue name nameText typeText value
 
-    printBoundValue name typeText value =
+    printBoundValue plainName styledName typeText value =
         case value of
             SomeInt expression ->
-                printInlineOrBlock 4 (name ++ typeText ++ " = ") (showSymExpr expression)
+                printInlineOrBlock 4 (styledName ++ typeText ++ " = ") (showSymExpr expression)
 
             SomeReal expression ->
-                printInlineOrBlock 4 (name ++ typeText ++ " = ") (showSymExpr expression)
+                printInlineOrBlock 4 (styledName ++ typeText ++ " = ") (showSymExpr expression)
 
             SomeBool predicate ->
-                printInlineOrBlock 4 (name ++ typeText ++ " = ") (showSymExpr predicate)
+                printInlineOrBlock 4 (styledName ++ typeText ++ " = ") (showSymExpr predicate)
 
             SomeIntArray array ->
-                printArrayValue name typeText "integer" array
+                printArrayValue plainName styledName typeText "integer" array
 
             SomeRealArray array ->
-                printArrayValue name typeText "real" array
+                printArrayValue plainName styledName typeText "real" array
 
             SomeBoolArray array ->
-                printArrayValue name typeText "logical" array
+                printArrayValue plainName styledName typeText "logical" array
 
-    printArrayValue name typeText elementType array = do
+    printArrayValue ::
+        forall tp.
+        String ->
+        String ->
+        String ->
+        String ->
+        ArrayRecord sym tp ->
+        IO ()
+    printArrayValue plainName styledName typeText elementType array = do
         arrayDescription <-
             styledText normalStyle (" (initialised " ++ elementType ++ " array)")
-        putStrLn $ "    " ++ name ++ typeText ++ arrayDescription
+        putStrLn $ "    " ++ styledName ++ typeText ++ arrayDescription
 
         case numbered (arrayDimensions array) of
             [] -> printSecondaryLine 6 "Dimensions: <none>"
             dimensions -> mapM_ printDimension dimensions
 
-        printInlineOrBlock 6 "Contents: " (showSymExpr (arrayContents array))
-        printInlineOrBlock 6 "Initialisation mask: " (showSymExpr (arrayInitMask array))
+        maybeElements <- expandConcreteArray sym array
+        case maybeElements of
+            Just [] -> printSecondaryLine 6 "Elements: <empty>"
+            Just elements -> mapM_ (printArrayElement plainName) elements
+            Nothing -> do
+                printInlineOrBlock 6 "Contents: " (showSymExpr (arrayContents array))
+                printInlineOrBlock 6 "Initialisation mask: " (showSymExpr (arrayInitMask array))
 
     printDimension (index, dimension) = do
         let lower = showSymExpr (dimensionLower dimension)
@@ -258,6 +284,17 @@ printEnvironment state = do
                 printSecondaryLine 6 ("Dimension " ++ show index ++ ":")
                 printInlineOrBlock 8 "Lower: " lower
                 printInlineOrBlock 8 "Upper: " upper
+
+    printArrayElement ::
+        forall tp.
+        String ->
+        ([Integer], Maybe (SymExpr sym tp)) ->
+        IO ()
+    printArrayElement name (indices, maybeValue) =
+        printInlineOrBlock
+            6
+            (name ++ "(" ++ commaSeparated (map show indices) ++ ") = ")
+            (maybe "<uninitialised>" showSymExpr maybeValue)
 
 
 printPredicates ::
@@ -355,13 +392,14 @@ printAllObligationResults stateResults =
 
 
 printStatesWithObligationResults ::
-    IsExpr (SymExpr sym) =>
+    IsSymExprBuilder sym =>
+    sym ->
     ReportOptions ->
     String ->
     [SymState sym a] ->
     [[(Obligation sym, ObligationResult)]] ->
     IO ()
-printStatesWithObligationResults reportOptions label states stateResults = do
+printStatesWithObligationResults sym reportOptions label states stateResults = do
     printReportHeading label (length states)
     printPairedStates (1 :: Int) states stateResults
   where
@@ -372,7 +410,7 @@ printStatesWithObligationResults reportOptions label states stateResults = do
             visibleResults = filter (shouldPrintObligationResult reportOptions . snd) numberedResults
             hiddenCount = length numberedResults - length visibleResults
         printStateHeading index
-        printStateDetails state
+        printStateDetails sym state
         printNumberedObligations
             (map (\(number, (obligation, _result)) -> (number, obligation)) visibleResults)
             hiddenCount
@@ -576,6 +614,94 @@ nonEmptyLines text =
     case lines text of
         [] -> [""]
         textLines -> textLines
+
+
+expandConcreteArray ::
+    IsSymExprBuilder sym =>
+    sym ->
+    ArrayRecord sym tp ->
+    IO (Maybe [([Integer], Maybe (SymExpr sym tp))])
+expandConcreteArray sym array =
+    case traverse concreteBounds (arrayDimensions array) of
+        Nothing -> pure Nothing
+        Just bounds ->
+            if arrayElementCount bounds > toInteger maximumExpandedArrayElements
+                then pure Nothing
+                else expandElements (enumerateIndices bounds)
+  where
+    expandElements indices =
+        case indices of
+            [] -> pure (Just [])
+            currentIndices : remainingIndices -> do
+                symbolicIndices <- mapM (intLit sym) currentIndices
+                flatIndex <-
+                    flattenArrayIndices
+                        sym
+                        (arrayDimensions array)
+                        symbolicIndices
+                initialised <-
+                    arrayLookup
+                        sym
+                        (arrayInitMask array)
+                        (Ctx.singleton flatIndex)
+                case asConstantPred initialised of
+                    Nothing -> pure Nothing
+                    Just isInitialised -> do
+                        maybeValue <-
+                            if isInitialised
+                                then
+                                    Just
+                                        <$> arrayLookup
+                                            sym
+                                            (arrayContents array)
+                                            (Ctx.singleton flatIndex)
+                                else pure Nothing
+                        remainingElements <- expandElements remainingIndices
+                        pure
+                            ( fmap
+                                ((currentIndices, maybeValue) :)
+                                remainingElements
+                            )
+
+
+concreteBounds ::
+    IsExpr (SymExpr sym) =>
+    ArrayDimension sym ->
+    Maybe (Integer, Integer)
+concreteBounds dimension = do
+    lower <- asInteger (dimensionLower dimension)
+    upper <- asInteger (dimensionUpper dimension)
+    pure (lower, upper)
+
+
+enumerateIndices :: [(Integer, Integer)] -> [[Integer]]
+enumerateIndices bounds =
+    case bounds of
+        [] -> [[]]
+        (lower, upper) : remainingBounds ->
+            [ index : remainingIndices
+            | remainingIndices <- enumerateIndices remainingBounds
+            , index <- [lower .. upper]
+            ]
+
+
+arrayElementCount :: [(Integer, Integer)] -> Integer
+arrayElementCount =
+    product
+        . map
+            (\(lower, upper) -> max 0 (upper - lower + 1))
+
+
+maximumExpandedArrayElements :: Int
+maximumExpandedArrayElements = 256
+
+
+commaSeparated :: [String] -> String
+commaSeparated values =
+    case values of
+        [] -> ""
+        value : remainingValues ->
+            value ++ concatMap (", " ++) remainingValues
 
 
 stateCountHeading :: String -> Int -> String
