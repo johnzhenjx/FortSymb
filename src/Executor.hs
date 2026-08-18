@@ -437,7 +437,10 @@ execStatement sym flags statement state =
         StRead2 _ann _span _format maybeReadList -> do
             newState <- execRead2s sym maybeReadList state --don't include StRead for now
             pure [newState]
-        StIfLogical _ann _span cond stmt -> execIfLogical sym flags cond stmt state --one-line if, ie if(cond) stmt
+        StPrint _ann _span _format maybeOutputList ->
+            execPrintExpressions sym flags (maybe [] alistList maybeOutputList) state
+        StIfLogical _ann _span cond stmt -> 
+            execIfLogical sym flags cond stmt state --one-line if, ie if(cond) stmt
         
         StCall _ann _span procedureExpr argumentsInfo ->
             case procedureExpr of
@@ -454,6 +457,24 @@ execStatement sym flags statement state =
         StImplicit{} -> pure [state]
 
         _ -> error "Unsupported statement type"
+
+
+execPrintExpressions ::
+    ExprBuilder t st fs
+    -> ExecutorFlags
+    -> [Expression a]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [SymState (ExprBuilder t st fs) a]
+execPrintExpressions sym flags expressions state =
+    case expressions of
+        [] -> pure [state]
+        expression : remainingExpressions ->
+            bindValueOutcomes
+                (evalExpr sym flags expression state)
+                (\(_value, state1) ->
+                    execPrintExpressions sym flags remainingExpressions state1
+                )
+                (\haltedState -> pure [haltedState])
 
 
 setVariableIntents ::

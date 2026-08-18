@@ -26,7 +26,6 @@ dependencies:
 - bytestring
 - what4
 - parameterized-utils
-- prettyprinter
 - optparse-applicative
 - ansi-terminal
 
