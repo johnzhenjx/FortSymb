@@ -63,10 +63,9 @@ z3exe :: FilePath
 z3exe =
     "z3-4.8.12-x86-win/bin/z3.exe"
 
--- Runs a solver query and handles the result while the Z3 session is open.
+--runs a solver query and handles the result while the Z3 session is open
 --
--- This is important because GroundEvalFn is only valid inside the
--- withZ3 callback.
+--this is important because GroundEvalFn is only valid inside the withZ3 callback
 withSolverResult ::
     ExprBuilder t st fs ->
     BoolExpr t ->
@@ -78,7 +77,7 @@ withSolverResult sym predicate handleResult =
         runCheckSat session handleResult
 
 
--- checks whether one symbolic state has satisfiable path condition list.
+--checks whether one symbolic state has satisfiable path condition list
 checkStateFeasibility ::
     ExprBuilder t st fs ->
     SymState (ExprBuilder t st fs) a ->
@@ -93,7 +92,7 @@ checkStateFeasibility sym state = do
             Unknown -> error "Solver failed to determine path feasibility."
 
 
--- filters out states whose path conditions are unsatisfiable.
+--filters out states whose path conditions are unsatisfiable
 keepFeasibleStates ::
     ExprBuilder t st fs ->
     [SymState (ExprBuilder t st fs) a] ->
