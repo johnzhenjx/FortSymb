@@ -13,3 +13,12 @@ attributeDimensions attributes =
             case attribute of
                 AttrDimension _ann _span dimensionsInfo -> Just dimensionsInfo
                 _ -> attributeDimensions remainingAttributes
+
+attributeIntent :: [Attribute a] -> Maybe Intent
+attributeIntent attributes =
+    case attributes of
+        [] -> Nothing
+        attribute : remainingAttributes ->
+            case attribute of
+                AttrIntent _ann _span intent -> Just intent
+                _ -> attributeIntent remainingAttributes

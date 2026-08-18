@@ -30,6 +30,21 @@ data ArrayRecord sym elementType = ArrayRecord
     , arrayDimensions :: [ArrayDimension sym]
     }
 
+data EvaluatedArraySubscript sym
+    = ScalarSubscript (SymExpr sym BaseIntegerType)
+    | SectionSubscript
+        { sectionStart :: SymExpr sym BaseIntegerType
+        , sectionStride :: SymExpr sym BaseIntegerType
+        , sectionExtent :: SymExpr sym BaseIntegerType
+        }
+
+data EvaluatedDesignator sym
+    = VariableDesignator SrcSpan VarName
+    | ArraySubscriptDesignator
+        SrcSpan
+        VarName
+        [EvaluatedArraySubscript sym]
+
 
 data SomeExpr sym where
     SomeInt  :: SymExpr sym BaseIntegerType -> SomeExpr sym
@@ -46,11 +61,12 @@ data VarType
     | VarInt
     | VarBool
     | VarArray VarType Int --array of type and rank
-    deriving Show
+    deriving (Eq, Show)
 
 data VarBinding sym = VarBinding
     { varType  :: VarType
     , varValue :: Maybe (SomeExpr sym)
+    , varIntent :: Maybe Intent
     }
 
 

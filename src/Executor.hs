@@ -12,6 +12,7 @@ import Types
 import {-# SOURCE #-} EvalExpr (getVarType, evalExpr, coerceOnAssignment, coerceArrayOnAssignment, bindBranches, bindValueOutcomes)
 import Arrays
 import Attributes
+import Designators
 import Procedures
 import SymbolicPath
 
@@ -307,16 +308,18 @@ execDoBlock sym flags span maybeName maybeSpec body state =
                 Nothing -> error $ "Undeclared variable in doloop (wtf): " ++ name
 
                 Just binding ->
-                    case varType binding of
-                        VarInt ->
-                            pure state
-                                { env = Map.insert 
-                                    name 
-                                    (binding { varValue = Just (SomeInt value) }) 
-                                    (env state) 
-                                }
+                    do
+                        ensureBindingWritable name binding
+                        case varType binding of
+                            VarInt ->
+                                pure state
+                                    { env = Map.insert
+                                        name
+                                        (binding { varValue = Just (SomeInt value) })
+                                        (env state)
+                                    }
 
-                        _ -> error $ "Expected integer variable in doloop (wtf): " ++ name
+                            _ -> error $ "Expected integer variable in doloop (wtf): " ++ name
         
         -- (increment > 0 && currentValue <= limitValue)
         -- ||
@@ -427,6 +430,8 @@ execStatement sym flags statement state =
         StDeclaration _ann _span typeSpec maybeAttributesInfo declsInfo -> do
             let attributes = maybe [] alistList maybeAttributesInfo
             declareVars sym flags typeSpec attributes (alistList declsInfo) state
+        StIntent _ann _span intent variablesInfo ->
+            setVariableIntents intent (alistList variablesInfo) state
         StExpressionAssign _ann _span lhs rhs ->
             execAssign sym flags lhs rhs state
         StRead2 _ann _span _format maybeReadList -> do
@@ -451,6 +456,37 @@ execStatement sym flags statement state =
         _ -> error "Unsupported statement type"
 
 
+setVariableIntents ::
+    Intent
+    -> [Expression a]
+    -> SymState sym a
+    -> IO [SymState sym a]
+setVariableIntents intent variables state =
+    case variables of
+        [] -> pure [state]
+        variable : remaining -> do
+            name <-
+                case variable of
+                    ExpValue _ann _span (ValVariable variableName) ->
+                        pure variableName
+                    _ -> error "INTENT target must be a variable"
+
+            binding <-
+                case Map.lookup name (env state) of
+                    Nothing -> error $ "INTENT target is not declared: " ++ name
+                    Just existingBinding -> pure existingBinding
+
+            let state1 =
+                    state
+                        { env =
+                            Map.insert
+                                name
+                                (binding { varIntent = Just intent })
+                                (env state)
+                        }
+            setVariableIntents intent remaining state1
+
+
 execAllocate :: 
     ExprBuilder t st fs
     -> ExecutorFlags
@@ -464,11 +500,7 @@ execAllocate sym flags allocationObjects initialState = allocateObjects allocati
             [] -> pure states
 
             allocationObject : remainingObjects -> do
-                nestedStates <-
-                    mapM
-                        (allocateObject allocationObject)
-                        states
-
+                nestedStates <- mapM (allocateObject allocationObject) states
                 allocateObjects remainingObjects (concat nestedStates)
 
 
@@ -491,7 +523,8 @@ execAllocate sym flags allocationObjects initialState = allocateObjects allocati
             case Map.lookup name (env state) of
                 Nothing -> error $ "Allocation of undeclared array: " ++ name
 
-                Just binding ->
+                Just binding -> do
+                    ensureBindingWritable name binding
                     case varType binding of
                         VarArray elementType rank ->
                             case varValue binding of
@@ -624,7 +657,7 @@ declareVar sym flags typeSpec attributes decl state =
                         Just dimensionListInfo ->
                             declareArrayVar sym flags typeSpec attributes name dimensionListInfo (declaratorInitial decl) state
                         Nothing ->
-                            declareScalarVar sym flags typeSpec name (declaratorInitial decl) state
+                            declareScalarVar sym flags typeSpec attributes name (declaratorInitial decl) state
                 ArrayDecl dimensionListInfo ->
                     declareArrayVar sym flags typeSpec attributes name dimensionListInfo (declaratorInitial decl) state
         _ -> error "Declaration target is not a variable"
@@ -634,18 +667,19 @@ declareScalarVar ::
     ExprBuilder t st fs
     -> ExecutorFlags 
     -> TypeSpec a 
+    -> [Attribute a]
     -> VarName 
     -> Maybe (Expression a) 
     -> SymState (ExprBuilder t st fs) a 
     -> IO [SymState (ExprBuilder t st fs) a]
-declareScalarVar sym flags typeSpec name maybeInitial state =
+declareScalarVar sym flags typeSpec attributes name maybeInitial state =
     case maybeInitial of
         Nothing ->
             pure [ state 
                     { env = 
                         Map.insert 
                             name 
-                            (VarBinding (getVarType typeSpec) Nothing) 
+                            (VarBinding (getVarType typeSpec) Nothing (attributeIntent attributes))
                             (env state) 
                     }
                 ]
@@ -659,7 +693,7 @@ declareScalarVar sym flags typeSpec name maybeInitial state =
                             { env =
                                 Map.insert
                                     name
-                                    (VarBinding (getVarType typeSpec) (Just valueAfterCoercion))
+                                    (VarBinding (getVarType typeSpec) (Just valueAfterCoercion) (attributeIntent attributes))
                                     (env state1)
                             }
                           ]
@@ -681,7 +715,7 @@ declareArrayVar ::
 
 declareArrayVar sym flags typeSpec attributes name dimensionListInfo maybeInitial state
     | isAllocatable attributes = 
-        pure [ state { env = Map.insert name (VarBinding arrayType Nothing) (env state) } ]
+        pure [ state { env = Map.insert name (VarBinding arrayType Nothing (attributeIntent attributes)) (env state) } ]
 
     | otherwise = do
         bindValueOutcomes
@@ -690,7 +724,7 @@ declareArrayVar sym flags typeSpec attributes name dimensionListInfo maybeInitia
                 case maybeInitial of
                     Nothing -> do
                         arrayValue <- createUninitialisedArray sym name (getVarType typeSpec) dimensions
-                        pure [state1 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state1) }]
+                        pure [state1 { env = Map.insert name (VarBinding arrayType (Just arrayValue) (attributeIntent attributes)) (env state1) }]
 
                     Just (ExpInitialisation _ann span elementsInfo) ->
                         bindValueOutcomes
@@ -705,7 +739,7 @@ declareArrayVar sym flags typeSpec attributes name dimensionListInfo maybeInitia
                                 state1
                             )
                             (\(arrayValue, state2) ->
-                                pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }]
+                                pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue) (attributeIntent attributes)) (env state2) }]
                             )
                             (\haltedState -> pure [haltedState])
 
@@ -715,7 +749,7 @@ declareArrayVar sym flags typeSpec attributes name dimensionListInfo maybeInitia
                             (\(initValue, state2) -> do
                                 coercedValue <- coerceOnAssignment sym (getVarType typeSpec) initValue
                                 arrayValue <- createConstantArray sym dimensions coercedValue
-                                pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue)) (env state2) }]
+                                pure [ state2 { env = Map.insert name (VarBinding arrayType (Just arrayValue) (attributeIntent attributes)) (env state2) }]
                             )
                             (\haltedState -> pure [haltedState])
             )
@@ -759,13 +793,15 @@ execVariableAssign sym flags span name rhs state =
             error $ "Assignment to undeclared variable: " ++ name
 
         Just binding ->
-            case varType binding of
-                VarArray _ _ ->
-                    case varValue binding of
-                        Nothing -> error $ "Assignment to unallocated array: " ++ name
-                        Just _ -> execWholeArrayAssign sym flags span name binding rhs state
+            do
+                ensureBindingWritable name binding
+                case varType binding of
+                    VarArray _ _ ->
+                        case varValue binding of
+                            Nothing -> error $ "Assignment to unallocated array: " ++ name
+                            Just _ -> execWholeArrayAssign sym flags span name binding rhs state
 
-                _ -> execScalarAssign sym flags name binding rhs state
+                    _ -> execScalarAssign sym flags name binding rhs state
 
 
 execScalarAssign ::
@@ -782,7 +818,7 @@ execScalarAssign sym flags name binding rhs state = do
         (\(rhsBeforeCoerce, state1) -> do
             rhsAfterCoerce <- coerceOnAssignment sym (varType binding) rhsBeforeCoerce
 
-            pure [state1 { env = Map.insert name (VarBinding (varType binding) (Just rhsAfterCoerce)) (env state1) }]
+            pure [state1 { env = Map.insert name (binding { varValue = Just rhsAfterCoerce }) (env state1) }]
         )
         (\haltedState -> pure [haltedState])
                     
@@ -799,90 +835,16 @@ execArraySubscriptAssign ::
     -> IO [SymState (ExprBuilder t st fs) a]
 
 execArraySubscriptAssign sym flags span baseExpr indexExprs rhs state = do
-    name <-
-        case baseExpr of
-            ExpValue _ann _span (ValVariable arrayName) -> pure arrayName
-            _ -> error "Unsupported array assignment target"
-
-    initialBinding <-
-        case Map.lookup name (env state) of
-            Nothing -> error $ "Assignment to undeclared array: " ++ name
-            Just binding -> pure binding
-
-    initialArray <-
-        case varValue initialBinding of
-            Nothing -> error $ "Assignment to uninitialised array: " ++ name
-            Just value -> pure value
-
-    let dimensions =
-            case initialArray of
-                SomeIntArray record -> arrayDimensions record
-                SomeRealArray record -> arrayDimensions record
-                SomeBoolArray record -> arrayDimensions record
-                _ -> error $ "Assignment target is not an array: " ++ name
-
     bindValueOutcomes
-        (evalArraySubscripts sym flags dimensions indexExprs state)
-        (\(subscripts, state1) ->
+        (evalArrayDesignator sym flags span baseExpr indexExprs state)
+        (\(designator, state1) ->
             bindValueOutcomes
                 (evalExpr sym flags rhs state1)
-                (\(rhsBeforeCoerce, state2) -> do
-                    currentBinding <-
-                        case Map.lookup name (env state2) of
-                            Nothing -> error $ "Array disappeared during evaluation: " ++ name
-                            Just binding -> pure binding
-
-                    currentArray <-
-                        case varValue currentBinding of
-                            Nothing -> error $ "Assignment to uninitialised array: " ++ name
-                            Just value -> pure value
-
-                    rhsAfterCoerce <-
-                        case rhsBeforeCoerce of
-                            SomeIntArray _ -> pure rhsBeforeCoerce
-                            SomeRealArray _ -> pure rhsBeforeCoerce
-                            SomeBoolArray _ -> pure rhsBeforeCoerce
-                            _ -> coerceOnAssignment sym (arrayElementType currentArray) rhsBeforeCoerce
-
-                    bindValueOutcomes
-                        (if not (hasArraySection subscripts) --single element update
-                            then
-                                updateSomeArray
-                                    sym
-                                    flags
-                                    span
-                                    currentArray
-                                    (scalarIndices subscripts)
-                                    rhsAfterCoerce
-                                    state2
-                            else
-                                updateArraySection
-                                    sym
-                                    flags
-                                    span
-                                    currentArray
-                                    subscripts
-                                    rhsAfterCoerce
-                                    state2
-                        )
-                        (\(updatedArrayValue, state3) ->
-                            let updatedBinding = currentBinding { varValue = Just updatedArrayValue }
-                                finalState = state3 { env = Map.insert name updatedBinding (env state3) }
-                            in pure [finalState]
-                        )
-                        (\haltedState -> pure [haltedState])
-                )
+                (\(rhsValue, state2) ->
+                    writeDesignator sym flags designator rhsValue state2)
                 (\haltedState -> pure [haltedState])
         )
         (\haltedState -> pure [haltedState])
-
-    where
-        scalarIndices subscripts =
-            case subscripts of
-                [] -> []
-                ScalarSubscript index : remaining -> index : scalarIndices remaining
-                SectionSubscript {} : _ ->
-                    error "Section passed to scalar array update"
 
 
 execWholeArrayAssign ::
@@ -1005,11 +967,12 @@ execRead2Var sym name state =
     case Map.lookup name (env state) of
         Nothing -> error ("Read into undeclared variable: " ++ name)
         Just binding -> do
+            ensureBindingWritable name binding
             let n = freshCount state
                 inputName = name ++ "_input_" ++ show n
 
             freshVal <- freshInputForType sym inputName (varType binding)
-            let newBinding = VarBinding (varType binding) (Just freshVal)
+            let newBinding = VarBinding (varType binding) (Just freshVal) (varIntent binding)
             pure state { env = Map.insert name newBinding (env state), freshCount = n+1 }
 
 freshInputForType :: IsSymExprBuilder sym
@@ -1383,8 +1346,9 @@ evalFunctionCall sym flags functionExpr arguments callerState = do
                 Nothing -> error $ "Unknown function: " ++ functionName
 
     let matchedArguments = matchProcedureArguments (functionParameters functionDef) arguments
+        parameterIntents = procedureParameterIntents functionDef
     bindValueOutcomes
-        (evalMatchedFunctionArguments sym flags matchedArguments callerState)
+        (evalMatchedProcedureArguments sym flags parameterIntents matchedArguments callerState)
         (\(evaluatedArguments, callerState1) ->
             execFunctionDefinition
                 sym
@@ -1402,7 +1366,7 @@ execFunctionDefinition ::
     -> ExecutorFlags 
     -> String 
     -> ProcedureDef a 
-    -> [(VarName, SrcSpan, SomeExpr (ExprBuilder t st fs))]
+    -> [EvaluatedProcedureArgument (ExprBuilder t st fs)]
     -> SymState (ExprBuilder t st fs) a 
     -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 
@@ -1425,6 +1389,7 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
                     (\block -> case block of
                         BlStatement _ann _span _label StDeclaration{} -> True
                         BlStatement _ann _span _label StImplicit{} -> True
+                        BlStatement _ann _span _label StIntent{} -> True
                         _ -> False
                     ) 
                     body
@@ -1436,7 +1401,7 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
                         ExecutionHalted _ -> pure [ValueComputationHaltedState (restoreCallerState callerState declaredLocalState)]
                         ExecutionComplete ->
                             bindBranches
-                                (bindFunctionParameters sym flags argumentValues declaredLocalState)
+                                (bindProcedureParameters sym flags argumentValues callerState declaredLocalState)
                                 (\boundLocalState ->
                                     case executionStatus boundLocalState of
                                         ExecutionHalted _ -> pure [ValueComputationHaltedState (restoreCallerState callerState boundLocalState)]
@@ -1445,7 +1410,7 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
                                                 case maybeReturnTypeSpec of
                                                     Nothing -> pure boundLocalState
                                                     Just returnTypeSpec -> do
-                                                        let returnBinding = VarBinding (getVarType returnTypeSpec) Nothing
+                                                        let returnBinding = VarBinding (getVarType returnTypeSpec) Nothing Nothing
                                                         pure boundLocalState { env = Map.insert resultName returnBinding (env boundLocalState) }
 
                                             bindBranches
@@ -1454,8 +1419,11 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
                                                     case executionStatus localState of
                                                         ExecutionHalted _ -> pure [ValueComputationHaltedState (restoreCallerState callerState localState)]
                                                         ExecutionComplete -> do
-                                                            result <- returnFunctionResult resultName callerState localState
-                                                            pure [result]
+                                                            returnFunctionResult
+                                                                resultName
+                                                                argumentValues
+                                                                callerState
+                                                                localState
                                                 )
                                 )
                 )
@@ -1472,12 +1440,7 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
                 , executionStatus = executionStatus localState
                 }
 
-        returnFunctionResult :: 
-            VarName -> 
-            SymState (ExprBuilder t st fs) a -> 
-            SymState (ExprBuilder t st fs) a -> 
-            IO (ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs)))
-        returnFunctionResult resultName callerState localState =
+        returnFunctionResult resultName evaluatedArguments callerState localState =
             case Map.lookup resultName (env localState) of
                 Nothing -> error $ "Function result variable is not declared: " ++ resultName
 
@@ -1485,16 +1448,25 @@ execFunctionDefinition sym flags functionName functionDef argumentValues callerS
                     case varValue binding of
                         Nothing -> error $ "Function result variable is uninitialised: " ++ resultName
                         Just resultValue ->
-                            --remove env in local scope, but pathCond, freshCount and obligations need to survive
-                            pure
-                                ( ValueAndStateProduced
-                                    resultValue
+                            bindBranches
+                                (copyProcedureArgumentsBack
+                                    sym
+                                    flags
+                                    evaluatedArguments
+                                    localState
                                     ( callerState
                                         { pathCond = pathCond localState
                                         , obligations = obligations localState
                                         , freshCount = freshCount localState
                                         }
                                     )
+                                )
+                                (\state ->
+                                    case executionStatus state of
+                                        ExecutionHalted _ ->
+                                            pure [ValueComputationHaltedState state]
+                                        ExecutionComplete ->
+                                            pure [ValueAndStateProduced resultValue state]
                                 )
 
 
@@ -1519,15 +1491,15 @@ evalSubroutineCall sym flags subroutineExpr arguments callerState = do
             Nothing -> error $ "Unknown subroutine: " ++ subroutineName
 
     let matchedArguments = matchProcedureArguments (subroutineParameters subroutineDef) arguments
+        parameterIntents = procedureParameterIntents subroutineDef
     bindValueOutcomes
-        (evalMatchedSubroutineArguments sym flags matchedArguments callerState)
+        (evalMatchedProcedureArguments sym flags parameterIntents matchedArguments callerState)
         (\(evaluatedArguments, callerState1) ->
             execSubroutineDefinition
                 sym
                 flags
                 subroutineName
                 subroutineDef
-                matchedArguments
                 evaluatedArguments
                 callerState1
         )
@@ -1540,12 +1512,11 @@ execSubroutineDefinition ::
     -> ExecutorFlags 
     -> String 
     -> ProcedureDef a 
-    -> [(VarName, Expression a)] 
-    -> [(VarName, SrcSpan, Maybe (SomeExpr (ExprBuilder t st fs)))]
+    -> [EvaluatedProcedureArgument (ExprBuilder t st fs)]
     -> SymState (ExprBuilder t st fs) a 
     -> IO [SymState (ExprBuilder t st fs) a]
 
-execSubroutineDefinition sym flags subroutineName subroutineDef matchedArguments argumentValues callerState = 
+execSubroutineDefinition sym flags subroutineName subroutineDef argumentValues callerState =
     case subroutineDef of
         SubroutineDef { subroutineBody = body } -> do
             let initialLocalState = callerState { env = Map.empty }
@@ -1555,6 +1526,7 @@ execSubroutineDefinition sym flags subroutineName subroutineDef matchedArguments
                     (\block -> case block of
                         BlStatement _ann _span _label StDeclaration{} -> True
                         BlStatement _ann _span _label StImplicit{} -> True
+                        BlStatement _ann _span _label StIntent{} -> True
                         _ -> False
                     ) 
                     body
@@ -1566,7 +1538,7 @@ execSubroutineDefinition sym flags subroutineName subroutineDef matchedArguments
                         ExecutionHalted _ -> pure [restoreCallerState callerState declaredLocalState]
                         ExecutionComplete ->
                             bindBranches
-                                (bindSubroutineParameters sym flags argumentValues declaredLocalState)
+                                (bindProcedureParameters sym flags argumentValues callerState declaredLocalState)
                                 (\boundLocalState ->
                                     case executionStatus boundLocalState of
                                         ExecutionHalted _ -> pure [restoreCallerState callerState boundLocalState]
@@ -1576,9 +1548,7 @@ execSubroutineDefinition sym flags subroutineName subroutineDef matchedArguments
                                                 (\finalLocalState ->
                                                     case executionStatus finalLocalState of
                                                         ExecutionHalted _ -> pure [restoreCallerState callerState finalLocalState]
-                                                        ExecutionComplete -> do
-                                                            returnedState <- returnSubroutineState matchedArguments callerState finalLocalState
-                                                            pure [returnedState]
+                                                        ExecutionComplete -> returnSubroutineStates argumentValues callerState finalLocalState
                                                 )
                                 )
                 )
@@ -1586,6 +1556,7 @@ execSubroutineDefinition sym flags subroutineName subroutineDef matchedArguments
         _ -> error $ "Not a subroutine: " ++ subroutineName
 
     where
+        --don't carry over envs from localState back to callerState
         restoreCallerState callerState localState =
             callerState
                 { pathCond = pathCond localState
@@ -1594,36 +1565,16 @@ execSubroutineDefinition sym flags subroutineName subroutineDef matchedArguments
                 , executionStatus = executionStatus localState
                 }
 
-        returnSubroutineState matchedArguments callerState localState = do
-            updatedCallerEnv <- copyArgumentsBack (env callerState) matchedArguments
-            pure callerState
-                { env = updatedCallerEnv
-                , pathCond = pathCond localState
-                , obligations = obligations localState
-                , freshCount = freshCount localState
-                }
-
-            where
-                copyArgumentsBack callerEnv argumentPairs =
-                    case argumentPairs of
-                        [] -> pure callerEnv
-                        (parameterName, argumentExpr) : rest -> do
-                            argumentName <-
-                                case argumentExpr of
-                                    ExpValue _ann _span (ValVariable name) -> pure name
-                                    _ -> error $ "Subroutine argument for parameter " ++ parameterName ++ " must currently be a variable, cannot do e.g. call foo(x+11)"
-                            
-                            parameterBinding <-
-                                case Map.lookup parameterName (env localState) of
-                                    Nothing -> error $ "Subroutine parameter is not declared: " ++ parameterName
-                                    Just binding -> pure binding
-                            
-                            callerBinding <-
-                                case Map.lookup argumentName callerEnv of
-                                    Nothing -> error $ "Subroutine argument is not declared in caller: " ++ argumentName
-                                    Just binding -> pure binding
-
-                            let updatedCallerEnv = Map.insert argumentName (callerBinding { varValue = varValue parameterBinding }) callerEnv
-                            copyArgumentsBack updatedCallerEnv rest
-
+        returnSubroutineStates evaluatedArguments callerState localState =
+            copyProcedureArgumentsBack
+                sym
+                flags
+                evaluatedArguments
+                localState
+                (callerState
+                    { pathCond = pathCond localState
+                    , obligations = obligations localState
+                    , freshCount = freshCount localState
+                    }
+                )
 

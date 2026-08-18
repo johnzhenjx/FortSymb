@@ -15,6 +15,7 @@ import Prelude hiding (EQ, LT, GT)
 
 import Types
 import Arrays
+import Designators
 import Executor
 import SymbolicPath
 
@@ -125,10 +126,10 @@ evalValue sym _flags span val state =
         ValVariable name ->
             case Map.lookup name (env state) of
                 Nothing -> error ("Variable not declared: " ++ name)
-                Just (VarBinding _ Nothing) -> do
+                Just (VarBinding _ Nothing _) -> do
                     haltedState <- addObligationAndAssume sym UninitialisedRead span (falsePred sym) state
                     pure [ValueComputationHaltedState haltedState]
-                Just (VarBinding _ (Just e)) -> pure [ValueAndStateProduced e state]
+                Just (VarBinding _ (Just e) _) -> pure [ValueAndStateProduced e state]
         ValInteger nStr _kind -> do
             e <- intLit sym (read nStr :: Integer)
             pure [ValueAndStateProduced (SomeInt e) state]
@@ -454,55 +455,7 @@ evalArraySubscript ::
     -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
 
 evalArraySubscript sym flags span baseExpr indicesExprs state = do
-    arrayName <-
-        case baseExpr of
-            ExpValue _ann _span (ValVariable name) -> pure name
-            _ -> error "Unsupported array base expression"
-
-    initialArrayExpr <- lookupArrayValue arrayName state
-    let dimensions =
-            case initialArrayExpr of
-                SomeIntArray record -> arrayDimensions record
-                SomeRealArray record -> arrayDimensions record
-                SomeBoolArray record -> arrayDimensions record
-                _ -> error $ "Subscripted variable is not an array: " ++ arrayName
-
     bindValueOutcomes
-        (evalArraySubscripts sym flags dimensions indicesExprs state)
-        (\(subscripts, state1) -> do
-            currentArrayExpr <- lookupArrayValue arrayName state1
-            if not (hasArraySection subscripts)
-                then
-                    lookupSomeArray
-                        sym
-                        flags
-                        span
-                        currentArrayExpr
-                        (scalarIndices subscripts)
-                        state1
-                else
-                    createArraySection
-                        sym
-                        flags
-                        span
-                        currentArrayExpr
-                        subscripts
-                        state1
-        )
+        (evalArrayDesignator sym flags span baseExpr indicesExprs state)
+        (\(designator, state1) -> readDesignator sym flags designator state1)
         (\haltedState -> pure [ValueComputationHaltedState haltedState])
-
-    where
-        lookupArrayValue name currentState =
-            case Map.lookup name (env currentState) of
-                Just binding ->
-                    case varValue binding of
-                        Just value -> pure value
-                        Nothing -> error $ "Array variable is uninitialised: " ++ name
-                Nothing -> error $ "Unknown array variable: " ++ name
-
-        scalarIndices subscripts =
-            case subscripts of
-                [] -> []
-                ScalarSubscript index : remaining -> index : scalarIndices remaining
-                SectionSubscript {} : _ ->
-                    error "Internal error: section passed to scalar array lookup"

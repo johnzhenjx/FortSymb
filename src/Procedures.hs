@@ -6,12 +6,22 @@ import What4.Interface
 import What4.Expr.Builder
 
 import Types
+import Arrays
+import Designators
+import Attributes (attributeIntent)
+import SymbolicPath (addObligationAndAssume)
 
 import Data.Maybe (mapMaybe)
 import Data.Map (Map)  
 import qualified Data.Map as Map
 
-import {-# SOURCE #-} EvalExpr (evalExpr, bindValueOutcomes, coerceArrayOnAssignment, coerceOnAssignment)
+import {-# SOURCE #-} EvalExpr
+    ( bindBranches
+    , bindValueOutcomes
+    , coerceArrayOnAssignment
+    , coerceOnAssignment
+    , evalExpr
+    )
 
 extractProcedureDef :: ProgramUnit a -> Maybe (String, ProcedureDef a) 
 extractProcedureDef programUnit =
@@ -68,104 +78,166 @@ buildProcedureEnv :: [ProgramUnit a] -> ProcedureEnv a
 buildProcedureEnv = Map.fromList . mapMaybe extractProcedureDef
 
 
--- evalFunctionArguments :: IsSymExprBuilder sym 
---     => sym 
---     -> ExecutorFlags 
---     -> [Expression a] 
---     -> SymState sym
---     -> IO ([SomeExpr sym], SymState sym)
--- evalFunctionArguments sym flags argumentExprs initialState =
---     go argumentExprs initialState
---     where
---         go [] state = pure ([], state)
---         go (argumentExpr : remainingArguments) state = do
---             (argumentValue, state1) <- evalExpr sym flags argumentExpr state
---             (remainingValues, state2) <- go remainingArguments state1
---             pure (argumentValue : remainingValues, state2)
+data EvaluatedProcedureArgument sym
+    = ProcedureDesignatorArgument
+        VarName
+        SrcSpan
+        (Maybe Intent)
+        (EvaluatedDesignator sym)
+        (Maybe (SomeExpr sym))
+    | ProcedureExpressionArgument
+        VarName
+        SrcSpan
+        (Maybe Intent)
+        (SomeExpr sym)
 
 
-evalMatchedFunctionArguments :: 
-    ExprBuilder t st fs
-    -> ExecutorFlags 
-    -> [(VarName, Expression a)] 
-    -> SymState (ExprBuilder t st fs) a 
-    -> IO [ValueOutcome (ExprBuilder t st fs) a [(VarName, SrcSpan, SomeExpr (ExprBuilder t st fs))]]
-evalMatchedFunctionArguments sym flags matchedArguments initialState =
-    go matchedArguments initialState
+procedureParameterIntents :: ProcedureDef a -> Map VarName Intent
+procedureParameterIntents procedureDef =
+    Map.fromList
+        [ nameAndIntent
+        | block <- body
+        , nameAndIntent <- blockIntents block
+        ]
     where
-        go args state = case args of
-            [] -> pure [ValueAndStateProduced [] state]
+        body =
+            case procedureDef of
+                FunctionDef { functionBody = functionBlocks } -> functionBlocks
+                SubroutineDef { subroutineBody = subroutineBlocks } -> subroutineBlocks
 
-            (parameterName, expression) : remainingArguments ->
-                bindValueOutcomes
-                    (evalExpr sym flags expression state)
-                    (\(value, state1) ->
-                        bindValueOutcomes
-                            (go remainingArguments state1)
-                            (\(remainingValues, state2) ->
-                                pure
-                                    [ ValueAndStateProduced
-                                        ((parameterName, expressionSpan expression, value) : remainingValues)
-                                        state2
+        blockIntents block =
+            case block of
+                BlStatement _ann _span _label statement ->
+                    case statement of
+                        StDeclaration _ _ _ maybeAttributesInfo declarationsInfo ->
+                            case attributeIntent (maybe [] alistList maybeAttributesInfo) of
+                                Nothing -> []
+                                Just intent ->
+                                    [ (name, intent)
+                                    | declaration <- alistList declarationsInfo
+                                    , ExpValue _ _ (ValVariable name) <- [declaratorVariable declaration]
                                     ]
-                            )
-                            (\haltedState -> pure [ValueComputationHaltedState haltedState])
-                    )
-                    (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
--- subroutines may pass uninitialised variables inside and assign to them inside the call
--- thus we need to wrap evaluated expressions inside Maybe
-evalMatchedSubroutineArguments ::
+                        StIntent _ _ intent variablesInfo ->
+                            [ (name, intent)
+                            | ExpValue _ _ (ValVariable name) <- alistList variablesInfo
+                            ]
+
+                        _ -> []
+
+                _ -> []
+
+
+--procedures may receive an uninitialised designator and assign it in the call
+evalMatchedProcedureArguments ::
     ExprBuilder t st fs
     -> ExecutorFlags
+    -> Map VarName Intent
     -> [(VarName, Expression a)]
     -> SymState (ExprBuilder t st fs) a
-    -> IO [ValueOutcome (ExprBuilder t st fs) a [(VarName, SrcSpan, Maybe (SomeExpr (ExprBuilder t st fs)))]]
-evalMatchedSubroutineArguments sym flags matchedArguments initialState =
+    -> IO [ValueOutcome (ExprBuilder t st fs) a [EvaluatedProcedureArgument (ExprBuilder t st fs)]]
+evalMatchedProcedureArguments sym flags parameterIntents matchedArguments initialState =
     go matchedArguments initialState
     where
         go args state = case args of
             [] -> pure [ValueAndStateProduced [] state]
 
             (parameterName, expression) : remainingArguments ->
+                let intent = Map.lookup parameterName parameterIntents
+                in
                 case expression of
                     ExpValue _ann span (ValVariable argumentName) -> do
-                        argumentValue <-
-                            case Map.lookup argumentName (env state) of
-                                Nothing -> error $ "Subroutine argument is not declared: " ++ argumentName
-                                Just binding -> pure (varValue binding)
+                        let designator = VariableDesignator span argumentName
+                        case intent of
+                            Just Out -> continueWithDesignator parameterName span intent designator Nothing remainingArguments state
+                            Just In -> readAndContinue parameterName span intent designator remainingArguments state
+                            Just InOut -> readAndContinue parameterName span intent designator remainingArguments state
+                            Nothing -> do
+                                argumentValue <-
+                                    case Map.lookup argumentName (env state) of
+                                        Nothing -> error $ "Procedure argument is not declared: " ++ argumentName
+                                        Just binding -> pure (varValue binding)
+                                continueWithDesignator parameterName span intent designator argumentValue remainingArguments state
 
+                    ExpSubscript _ann span baseExpr indicesInfo ->
                         bindValueOutcomes
-                            (go remainingArguments state)
-                            (\(remainingValues, state1) ->
-                                pure
-                                    [ ValueAndStateProduced
-                                        ((parameterName, span, argumentValue) : remainingValues)
-                                        state1
-                                    ]
+                            (evalArrayDesignator
+                                sym
+                                flags
+                                span
+                                baseExpr
+                                (alistList indicesInfo)
+                                state
+                            )
+                            (\(designator, state1) ->
+                                case intent of
+                                    Just Out ->
+                                        bindValueOutcomes
+                                            (validateDesignator sym designator state1)
+                                            (\((), state2) ->
+                                                continueWithDesignator parameterName span intent designator Nothing remainingArguments state2)
+                                            (\haltedState -> pure [ValueComputationHaltedState haltedState])
+                                    _ ->
+                                        readAndContinue parameterName span intent designator remainingArguments state1
                             )
                             (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
                     _ ->
-                        bindValueOutcomes
-                            (evalExpr sym flags expression state)
-                            (\(value, state1) ->
+                        case intent of
+                            Just Out -> error $ "INTENT(OUT) parameter " ++ parameterName ++ " requires a writable designator"
+                            Just InOut -> error $ "INTENT(INOUT) parameter " ++ parameterName ++ " requires a writable designator"
+                            _ ->
                                 bindValueOutcomes
-                                    (go remainingArguments state1)
-                                    (\(remainingValues, state2) ->
-                                        pure
-                                            [ ValueAndStateProduced
-                                                ((parameterName, expressionSpan expression, Just value) : remainingValues)
-                                                state2
-                                            ]
+                                    (evalExpr sym flags expression state)
+                                    (\(value, state1) ->
+                                        bindValueOutcomes
+                                            (go remainingArguments state1)
+                                            (\(remainingValues, state2) ->
+                                                pure
+                                                    [ ValueAndStateProduced
+                                                        ( ProcedureExpressionArgument
+                                                            parameterName
+                                                            (expressionSpan expression)
+                                                            intent
+                                                            value
+                                                            : remainingValues
+                                                        )
+                                                        state2
+                                                    ]
+                                            )
+                                            (\haltedState -> pure [ValueComputationHaltedState haltedState])
                                     )
                                     (\haltedState -> pure [ValueComputationHaltedState haltedState])
+
+        readAndContinue parameterName span intent designator remainingArguments state =
+            bindValueOutcomes
+                (readDesignator sym flags designator state)
+                (\(value, state1) ->
+                    continueWithDesignator parameterName span intent designator (Just value) remainingArguments state1)
+                (\haltedState -> pure [ValueComputationHaltedState haltedState])
+
+        continueWithDesignator parameterName span intent designator argumentValue remainingArguments state =
+            bindValueOutcomes
+                (go remainingArguments state)
+                (\(remainingValues, state1) ->
+                    pure
+                        [ ValueAndStateProduced
+                            ( ProcedureDesignatorArgument
+                                parameterName
+                                span
+                                intent
+                                designator
+                                argumentValue
+                                : remainingValues
                             )
-                            (\haltedState -> pure [ValueComputationHaltedState haltedState])
+                            state1
+                        ]
+                )
+                (\haltedState -> pure [ValueComputationHaltedState haltedState])
 
 
 argumentToExpr :: Argument a -> Expression a
-argumentToExpr argument = case argumentExpr argument of {ArgExpr expr -> expr; _ -> error "Unsupported function arg"}
+argumentToExpr argument = case argumentExpr argument of {ArgExpr expr -> expr; _ -> error "Unsupported procedure argument"}
 
 expressionSpan :: Expression a -> SrcSpan
 expressionSpan expression =
@@ -203,7 +275,7 @@ matchProcedureArguments parameterNames arguments = do
             )
             parameterNames
 
-        _ -> error $ "Missing function arguments: " ++ show missingParameters
+        _ -> error $ "Missing procedure arguments: " ++ show missingParameters
     where
         go :: Int -> Bool -> Map VarName (Expression a) -> [Argument a] -> Map VarName (Expression a)
         go nextPos seenNamed matched args = case args of
@@ -236,61 +308,213 @@ matchProcedureArguments parameterNames arguments = do
 
 
 
---after declaration blocks, bind input values to their corrosponding variable bindings in local scope
-bindFunctionParameters :: ExprBuilder t st fs
+bindProcedureParameters :: ExprBuilder t st fs
     -> ExecutorFlags 
-    -> [(VarName, SrcSpan, SomeExpr (ExprBuilder t st fs))]
+    -> [EvaluatedProcedureArgument (ExprBuilder t st fs)]
+    -> SymState (ExprBuilder t st fs) a
     -> SymState (ExprBuilder t st fs) a
     -> IO [SymState (ExprBuilder t st fs) a]
-bindFunctionParameters sym flags argumentValues initialState =
+bindProcedureParameters sym flags argumentValues callerState initialState =
     go initialState argumentValues
     where
         go state argPairs = case argPairs of
             [] -> pure [state]
-            (parameterName, span, argumentValue) : rest -> do
+            argument : rest -> do
+                let (parameterName, span, intent, maybeArgumentValue) =
+                        case argument of
+                            ProcedureDesignatorArgument name argumentSpan argumentIntent _ value ->
+                                (name, argumentSpan, argumentIntent, value)
+                            ProcedureExpressionArgument name argumentSpan argumentIntent value ->
+                                (name, argumentSpan, argumentIntent, Just value)
                 case Map.lookup parameterName (env state) of
-                    Nothing -> error $ "Function parameter is not declared: " ++ parameterName
+                    Nothing -> error $ "Procedure parameter is not declared: " ++ parameterName
                     Just binding ->
-                        bindValueOutcomes
-                            (coerceParameterValue sym flags span binding argumentValue state)
-                            (\(boundValue, state1) ->
-                                let updatedBinding = binding { varValue = Just boundValue }
-                                    state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
-                                in go state2 rest
-                            )
-                            (\haltedState -> pure [haltedState])
+                        case intent of
+                            Just Out ->
+                                case argument of
+                                    ProcedureExpressionArgument {} ->
+                                        error $ "INTENT(OUT) parameter " ++ parameterName ++ " requires a writable designator"
+                                    ProcedureDesignatorArgument _ _ _ designator _ -> do
+                                        state1 <- validateOutputAssociation sym span parameterName binding designator callerState state
+                                        case executionStatus state1 of
+                                            ExecutionHalted _ -> pure [state1]
+                                            ExecutionComplete ->
+                                                let outputValue =
+                                                        case varType binding of
+                                                            VarArray _ _ -> varValue binding
+                                                            _ -> Nothing
+                                                    updatedBinding = binding { varValue = outputValue }
+                                                    state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
+                                                in go state2 rest
+
+                            Just In -> bindInputParameter parameterName span binding maybeArgumentValue rest state
+                            Just InOut -> bindInputParameter parameterName span binding maybeArgumentValue rest state
+
+                            Nothing ->
+                                case maybeArgumentValue of
+                                    Nothing ->
+                                        let updatedBinding = binding { varValue = Nothing }
+                                            state1 = state { env = Map.insert parameterName updatedBinding (env state) }
+                                        in go state1 rest
+                                    Just _ ->
+                                        bindInputParameter parameterName span binding maybeArgumentValue rest state
+
+        bindInputParameter parameterName span binding maybeArgumentValue rest state =
+            case maybeArgumentValue of
+                Nothing ->
+                    error $ "Input parameter " ++ parameterName ++ " received an uninitialised argument"
+                Just argumentValue ->
+                    bindValueOutcomes
+                        (coerceParameterValue sym flags span binding argumentValue state)
+                        (\(boundValue, state1) ->
+                            let updatedBinding = binding { varValue = Just boundValue }
+                                state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
+                            in go state2 rest
+                        )
+                        (\haltedState -> pure [haltedState])
 
 
---now this also takes Maybe (SomeExpr sym)
-bindSubroutineParameters :: ExprBuilder t st fs
-    -> ExecutorFlags 
-    -> [(VarName, SrcSpan, Maybe (SomeExpr (ExprBuilder t st fs)))]
+copyProcedureArgumentsBack ::
+    ExprBuilder t st fs
+    -> ExecutorFlags
+    -> [EvaluatedProcedureArgument (ExprBuilder t st fs)]
+    -> SymState (ExprBuilder t st fs) a
     -> SymState (ExprBuilder t st fs) a
     -> IO [SymState (ExprBuilder t st fs) a]
-bindSubroutineParameters sym flags argumentValues initialState =
-    go initialState argumentValues
+copyProcedureArgumentsBack sym flags arguments localState initialCallerState =
+    go initialCallerState arguments
     where
-        go state argPairs = case argPairs of
-            [] -> pure [state]
-            (parameterName, span, maybeArgumentValue) : rest -> do
-                case Map.lookup parameterName (env state) of
-                    Nothing -> error $ "Function parameter is not declared: " ++ parameterName
-                    Just binding -> do
-                        case maybeArgumentValue of
-                            Nothing -> do
-                                let updatedBinding = binding { varValue = Nothing }
-                                    state1 = state { env = Map.insert parameterName updatedBinding (env state) }
-                                go state1 rest
+        go state remainingArguments =
+            case executionStatus state of
+                ExecutionHalted _ -> pure [state]
+                ExecutionComplete ->
+                    case remainingArguments of
+                        [] -> pure [state]
+                        argument : rest -> do
+                            let parameterName =
+                                    case argument of
+                                        ProcedureDesignatorArgument name _ _ _ _ -> name
+                                        ProcedureExpressionArgument name _ _ _ -> name
 
-                            Just argumentValue ->
-                                bindValueOutcomes
-                                    (coerceParameterValue sym flags span binding argumentValue state)
-                                    (\(boundValue, state1) ->
-                                        let updatedBinding = binding { varValue = Just boundValue }
-                                            state2 = state1 { env = Map.insert parameterName updatedBinding (env state1) }
-                                        in go state2 rest
-                                    )
-                                    (\haltedState -> pure [haltedState])
+                            parameterBinding <-
+                                case Map.lookup parameterName (env localState) of
+                                    Nothing -> error $ "Procedure parameter is not declared: " ++ parameterName
+                                    Just binding -> pure binding
+
+                            let argumentIntent =
+                                    case argument of
+                                        ProcedureDesignatorArgument _ _ intent _ _ -> intent
+                                        ProcedureExpressionArgument _ _ intent _ -> intent
+
+                            case argumentIntent of
+                                Just In ->
+                                    go state rest
+
+                                _ ->
+                                    case argument of
+                                        ProcedureExpressionArgument _ _ _ _ ->
+                                            error $
+                                                "Procedure argument for parameter "
+                                                    ++ parameterName
+                                                    ++ " is not a writable designator"
+
+                                        ProcedureDesignatorArgument _ _ _ designator _ ->
+                                            case varValue parameterBinding of
+                                                Nothing ->
+                                                    bindBranches
+                                                        (clearDesignator sym designator state)
+                                                        (\state1 -> go state1 rest)
+
+                                                Just parameterValue ->
+                                                    bindBranches
+                                                        (writeDesignator
+                                                            sym
+                                                            flags
+                                                            designator
+                                                            parameterValue
+                                                            state
+                                                        )
+                                                        (\state1 -> go state1 rest)
+
+
+validateOutputAssociation ::
+    ExprBuilder t st fs
+    -> SrcSpan
+    -> VarName
+    -> VarBinding (ExprBuilder t st fs)
+    -> EvaluatedDesignator (ExprBuilder t st fs)
+    -> SymState (ExprBuilder t st fs) a
+    -> SymState (ExprBuilder t st fs) a
+    -> IO (SymState (ExprBuilder t st fs) a)
+--checks that an actual argument is compatible with an intent output dummy
+validateOutputAssociation sym span parameterName parameterBinding designator callerState localState = do
+    (actualType, maybeActualDimensions) <- designatorTypeAndDimensions designator callerState
+    let parameterType = varType parameterBinding
+    case (parameterType, actualType) of
+        (VarArray parameterElementType _, VarArray actualElementType _)
+            | parameterElementType /= actualElementType ->
+                error $ "Array type mismatch for INTENT(OUT) parameter: " ++ parameterName
+            | otherwise -> do
+                parameterDimensions <-
+                    case varValue parameterBinding of
+                        Just (SomeIntArray record) -> pure (arrayDimensions record)
+                        Just (SomeRealArray record) -> pure (arrayDimensions record)
+                        Just (SomeBoolArray record) -> pure (arrayDimensions record)
+                        _ -> error $ "Array parameter has no declared shape: " ++ parameterName
+                actualDimensions <-
+                    case maybeActualDimensions of
+                        Just dimensions -> pure dimensions
+                        Nothing -> error $ "Array actual has no shape: " ++ parameterName
+                shapeMatches <- arrayShapesEqual sym parameterDimensions actualDimensions
+                addObligationAndAssume sym ArrayShape span shapeMatches localState
+
+        (VarArray _ _, _) -> error $ "Scalar argument passed to INTENT(OUT) array parameter: " ++ parameterName
+
+        (_, VarArray _ _) -> error $ "Array argument passed to INTENT(OUT) scalar parameter: " ++ parameterName
+
+        _
+            | scalarTypesAssignmentCompatible actualType parameterType -> pure localState
+            | otherwise -> error $ "Type mismatch for INTENT(OUT) parameter: " ++ parameterName
+    where
+        designatorTypeAndDimensions currentDesignator currentCallerState =
+            case currentDesignator of
+                VariableDesignator _ name -> do
+                    binding <- lookupCallerBinding name currentCallerState
+                    dimensions <- bindingDimensions binding
+                    pure (varType binding, dimensions)
+
+                ArraySubscriptDesignator _ name subscripts -> do
+                    binding <- lookupCallerBinding name currentCallerState
+                    elementType <-
+                        case varType binding of
+                            VarArray currentElementType _ -> pure currentElementType
+                            _ -> error $ "Subscripted argument is not an array: " ++ name
+                    if hasArraySection subscripts
+                        then do
+                            dimensions <- sectionDimensions sym subscripts
+                            pure (VarArray elementType (length dimensions), Just dimensions)
+                        else pure (elementType, Nothing)
+
+        lookupCallerBinding name currentCallerState =
+            case Map.lookup name (env currentCallerState) of
+                Nothing -> error $ "Procedure argument is not declared: " ++ name
+                Just binding -> pure binding
+
+        bindingDimensions binding =
+            case varValue binding of
+                Just (SomeIntArray record) -> pure (Just (arrayDimensions record))
+                Just (SomeRealArray record) -> pure (Just (arrayDimensions record))
+                Just (SomeBoolArray record) -> pure (Just (arrayDimensions record))
+                _ -> pure Nothing
+
+        scalarTypesAssignmentCompatible targetType sourceType =
+            case (targetType, sourceType) of
+                (VarInt, VarInt) -> True
+                (VarInt, VarReal) -> True
+                (VarReal, VarInt) -> True
+                (VarReal, VarReal) -> True
+                (VarBool, VarBool) -> True
+                _ -> False
                         
 
 coerceParameterValue :: ExprBuilder t st fs -> ExecutorFlags -> SrcSpan -> VarBinding (ExprBuilder t st fs) -> SomeExpr (ExprBuilder t st fs) -> SymState (ExprBuilder t st fs) a -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
@@ -324,5 +548,3 @@ coerceParameterValue sym flags span binding argumentValue state =
         _ -> do
             coercedValue <- coerceOnAssignment sym (varType binding) argumentValue
             pure [ValueAndStateProduced coercedValue state]
-
-

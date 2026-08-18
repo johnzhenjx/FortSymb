@@ -27,6 +27,7 @@ library
   exposed-modules:
     Arrays
     Attributes
+    Designators
     EvalExpr
     Executor
     Printer

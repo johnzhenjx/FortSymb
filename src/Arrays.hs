@@ -201,15 +201,6 @@ evalArrayDimension sym flags dimensionDecl state =
 
 
 
-data EvaluatedArraySubscript sym
-    = ScalarSubscript (SymExpr sym BaseIntegerType)
-    | SectionSubscript
-        { sectionStart :: SymExpr sym BaseIntegerType
-        , sectionStride :: SymExpr sym BaseIntegerType
-        , sectionExtent :: SymExpr sym BaseIntegerType
-        }
-
-
 evalArraySubscripts ::
     ExprBuilder t st fs
     -> ExecutorFlags
@@ -638,6 +629,111 @@ updateArraySectionFromArray sym span subscripts wrap targetRecord sourceRecord s
             sourceFlatIndex <-
                 flattenArrayIndices sym (arrayDimensions sourceRecord) sourceIndices
             arrayLookup sym (arrayInitMask sourceRecord) (Ctx.singleton sourceFlatIndex)
+
+
+clearSomeArrayElement ::
+    ExprBuilder t st fs
+    -> SrcSpan
+    -> SomeExpr (ExprBuilder t st fs)
+    -> [SymExpr (ExprBuilder t st fs) BaseIntegerType]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
+clearSomeArrayElement sym span arrayExpr indices state =
+    case arrayExpr of
+        SomeIntArray record -> clearArrayElement sym span indices SomeIntArray record state
+        SomeRealArray record -> clearArrayElement sym span indices SomeRealArray record state
+        SomeBoolArray record -> clearArrayElement sym span indices SomeBoolArray record state
+        _ -> error "Cannot clear an element of a non-array value"
+
+
+clearArrayElement ::
+    ExprBuilder t st fs
+    -> SrcSpan
+    -> [SymExpr (ExprBuilder t st fs) BaseIntegerType]
+    -> (ArrayRecord (ExprBuilder t st fs) elementType -> SomeExpr (ExprBuilder t st fs))
+    -> ArrayRecord (ExprBuilder t st fs) elementType
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
+clearArrayElement sym span indices wrap record state = do
+    inBounds <- arrayIndicesInBounds sym (arrayDimensions record) indices
+    state1 <- addObligationAndAssume sym ArrayBounds span inBounds state
+    case executionStatus state1 of
+        ExecutionHalted _ ->
+            pure [ValueComputationHaltedState state1]
+        ExecutionComplete -> do
+            flatIndex <- flattenArrayIndices sym (arrayDimensions record) indices
+            updatedMask <-
+                arrayUpdate
+                    sym
+                    (arrayInitMask record)
+                    (Ctx.singleton flatIndex)
+                    (falsePred sym)
+            pure
+                [ ValueAndStateProduced
+                    (wrap record { arrayInitMask = updatedMask })
+                    state1
+                ]
+
+
+clearArraySection ::
+    ExprBuilder t st fs
+    -> SrcSpan
+    -> SomeExpr (ExprBuilder t st fs)
+    -> [EvaluatedArraySubscript (ExprBuilder t st fs)]
+    -> SymState (ExprBuilder t st fs) a
+    -> IO [ValueOutcome (ExprBuilder t st fs) a (SomeExpr (ExprBuilder t st fs))]
+clearArraySection sym span arrayExpr subscripts state = do
+    let dimensions =
+            case arrayExpr of
+                SomeIntArray record -> arrayDimensions record
+                SomeRealArray record -> arrayDimensions record
+                SomeBoolArray record -> arrayDimensions record
+                _ -> error "Cannot clear a section of a non-array value"
+
+    inBounds <- arraySubscriptsInBounds sym dimensions subscripts
+    state1 <- addObligationAndAssume sym ArrayBounds span inBounds state
+    case executionStatus state1 of
+        ExecutionHalted _ ->
+            pure [ValueComputationHaltedState state1]
+        ExecutionComplete -> do
+            let sectionId = freshCount state1
+                state2 = state1 { freshCount = sectionId + 1 }
+            clearedArray <-
+                case arrayExpr of
+                    SomeIntArray record -> SomeIntArray <$> clearSectionMask sym sectionId subscripts record
+                    SomeRealArray record -> SomeRealArray <$> clearSectionMask sym sectionId subscripts record
+                    SomeBoolArray record -> SomeBoolArray <$> clearSectionMask sym sectionId subscripts record
+                    _ -> error "Cannot clear a section of a non-array value"
+            pure [ValueAndStateProduced clearedArray state2]
+
+
+clearSectionMask ::
+    IsSymExprBuilder sym
+    => sym
+    -> Int
+    -> [EvaluatedArraySubscript sym]
+    -> ArrayRecord sym elementType
+    -> IO (ArrayRecord sym elementType)
+clearSectionMask sym sectionId subscripts record = do
+    flatIndexVar <-
+        freshBoundVar
+            sym
+            (safeSymbol ("array_section_clear_index_" ++ show sectionId))
+            BaseIntegerRepr
+    let flatIndex = varExpr sym flatIndexVar
+    targetIndices <- unflattenArrayIndex sym (arrayDimensions record) flatIndex
+    (isSelected, _offsets) <- sectionMembershipAndOffsets sym subscripts targetIndices
+    oldMask <- arrayLookup sym (arrayInitMask record) (Ctx.singleton flatIndex)
+    updatedMaskBody <- baseTypeIte sym isSelected (falsePred sym) oldMask
+    updatedMaskFunction <-
+        definedFn
+            sym
+            (safeSymbol ("array_section_clear_mask_" ++ show sectionId))
+            (Ctx.singleton flatIndexVar)
+            updatedMaskBody
+            AlwaysUnfold
+    updatedMask <- arrayFromFn sym updatedMaskFunction
+    pure record { arrayInitMask = updatedMask }
 
 
 createSectionOverlay ::
