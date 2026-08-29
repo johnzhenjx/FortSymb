@@ -169,3 +169,5 @@ The following constructor features are not currently supported:
 - Character and complex types
 - General intrinsic functions
 - Formatted input and output
+- Pointers
+- Other types

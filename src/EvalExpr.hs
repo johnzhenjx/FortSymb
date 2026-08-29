@@ -69,7 +69,7 @@ bindValueOutcomes computation continuation haltedContinuation =
                 ValueComputationHaltedState haltedState ->
                     case executionStatus haltedState of
                         ExecutionHalted _ -> haltedContinuation haltedState
-                        ExecutionComplete -> error "Internal error: ValueComputationHaltedState contained an ExecutionComplete state"
+                        ExecutionComplete -> error "ValueComputationHaltedState contained an ExecutionComplete state"
         )
 
 

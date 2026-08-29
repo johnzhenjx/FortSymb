@@ -95,10 +95,8 @@ validateDesignator sym designator state =
             inBounds <- arraySubscriptsInBounds sym dimensions subscripts
             state1 <- addObligationAndAssume sym ArrayBounds span inBounds state
             case executionStatus state1 of
-                ExecutionHalted _ ->
-                    pure [ValueComputationHaltedState state1]
-                ExecutionComplete ->
-                    pure [ValueAndStateProduced () state1]
+                ExecutionHalted _ -> pure [ValueComputationHaltedState state1]
+                ExecutionComplete -> pure [ValueAndStateProduced () state1]
 
 
 writeDesignator ::
@@ -163,11 +161,14 @@ writeDesignator sym flags designator sourceValue state =
                 )
                 (\haltedState -> pure [haltedState])
 
+
 clearDesignator ::
     ExprBuilder t st fs
     -> EvaluatedDesignator (ExprBuilder t st fs)
     -> SymState (ExprBuilder t st fs) a
     -> IO [SymState (ExprBuilder t st fs) a]
+--scalars get varValue = Nothing;
+--array element/section has the corresponding initialisation-mask entries cleared
 clearDesignator sym designator state =
     case designator of
         VariableDesignator _span name -> do
