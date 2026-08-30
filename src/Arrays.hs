@@ -1025,7 +1025,7 @@ lookupSomeArray sym _flags span arrayExpr indices state =
         SomeIntArray arrayRecord -> lookupArray sym span indices SomeInt arrayRecord state
         SomeRealArray arrayRecord -> lookupArray sym span indices SomeReal arrayRecord state
         SomeBoolArray arrayRecord -> lookupArray sym span indices SomeBool arrayRecord state
-        _ -> error "lookupSomeArray: expression is not an array (or unaccepted array)"
+        _ -> error "Array lookup requires a supported array value"
     --weirdly, i get type error on SomeInt if i dont including sym, flags, indices and state into params for lookupArray -- will have to ask Nikolaus
     where
         lookupArray sym span indices wrap arrayRecord state = do
@@ -1094,11 +1094,11 @@ updateSomeArray sym _flags span arrayExpr indices newValue state =
             --same type error problem as above
         (SomeBoolArray arrayRecord, SomeBool value) -> updateArray sym span indices SomeBoolArray arrayRecord value state
 
-        (SomeIntArray {}, _) -> error "updateSomeArray: expected an integer value"
-        (SomeRealArray {}, _) -> error "updateSomeArray: expected a real value"
-        (SomeBoolArray {}, _) -> error "updateSomeArray: expected a logical value"
+        (SomeIntArray {}, _) -> error "Integer array update requires an integer value"
+        (SomeRealArray {}, _) -> error "Real array update requires a real value"
+        (SomeBoolArray {}, _) -> error "Logical array update requires a logical value"
 
-        _ -> error "updateSomeArray: expression is not an array"
+        _ -> error "Array update target is not an array"
     where
         updateArray sym span indices wrap arrayRecord value state = do
             inBoundsPred <- arrayIndicesInBounds sym (arrayDimensions arrayRecord) indices

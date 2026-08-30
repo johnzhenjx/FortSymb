@@ -28,6 +28,16 @@ import Executor
 import Data.Char (isSpace)
 import Data.List (dropWhileEnd, stripPrefix)
 
+import Control.Exception
+    ( ErrorCall
+    , Handler(..)
+    , IOException
+    , catches
+    , displayException
+    )
+import System.Exit (exitFailure)
+import System.IO (hPutStrLn, stderr)
+
 import Options.Applicative
 
 
@@ -79,7 +89,6 @@ parseReportOptions = do
 cliOptionsInfo :: ParserInfo (FilePath, ExecutorFlags, ReportOptions)
 cliOptionsInfo = info (parseCliOptions <**> helper)
         ( fullDesc
-        <> progDesc "Symbolic executor for Fortran programs"
         <> header "FortSymb"
         )
 
@@ -109,22 +118,39 @@ preprocessAssertions source =
 
 
 
+exitWithError :: String -> IO a
+exitWithError message = do
+    hPutStrLn stderr message
+    exitFailure
+
+
+handleErrorCall :: ErrorCall -> IO a
+handleErrorCall exception = exitWithError (takeWhile (/= '\n') (displayException exception))
+
+
+handleIOError :: IOException -> IO a
+handleIOError exception = exitWithError (displayException exception)
+
+
 main :: IO ()
-main = do
+main = runFortSymb `catches` [ Handler handleErrorCall, Handler handleIOError ]
+
+
+runFortSymb :: IO ()
+runFortSymb = do
     (filePath, flags, reportOptions) <- execParser cliOptionsInfo
     
     contents <- B.readFile filePath
     let transformedSource = B.pack (preprocessAssertions (B.unpack contents))
 
     case byVer Fortran90 filePath transformedSource of
-        Left err -> do
-            putStrLn "Parse error:"
-            print err
+        Left parseError ->
+            error $ show parseError
 
         Right ast -> do
-            styledAst <- styledText secondaryStyle (show ast)
-            putStrLn styledAst
-            putStrLn ""
+            -- styledAst <- styledText secondaryStyle (show ast)
+            -- putStrLn styledAst
+            -- putStrLn ""
 
             --changed from Some nonceGen <- newIONonceGenerator due to new {-# LANGUAGE ApplicativeDo #-}
             someNonceGen <- newIONonceGenerator
@@ -132,12 +158,6 @@ main = do
                 Some nonceGen -> do
                     sym <- newExprBuilder FloatRealRepr EmptyExprBuilderState nonceGen
                     extendConfig z3Options (getConfiguration sym)
-
-                    -- allStates <- execProgramFile sym flags ast
-                    -- feasibleStates <- keepFeasibleStates sym allStates
-                    -- obligationResults <- evaluateAllStateObligations sym feasibleStates
-                    -- printStatesWithObligationResults "feasible" feasibleStates obligationResults
-
                     resultStates <- execProgramFile sym flags ast
                     obligationResults <- evaluateAllStateObligations sym resultStates
                     printStatesWithObligationResults sym reportOptions "feasible" resultStates obligationResults

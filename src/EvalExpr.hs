@@ -23,7 +23,7 @@ getVarType typeSpec =
         TypeReal -> VarReal
         TypeInteger -> VarInt
         TypeLogical -> VarBool
-        _ -> error "Unsupported declaration type"
+        _ -> error "Unsupported declaration type in the current Fortran subset"
 
 
 -- bindEval ::
@@ -69,7 +69,7 @@ bindValueOutcomes computation continuation haltedContinuation =
                 ValueComputationHaltedState haltedState ->
                     case executionStatus haltedState of
                         ExecutionHalted _ -> haltedContinuation haltedState
-                        ExecutionComplete -> error "ValueComputationHaltedState contained an ExecutionComplete state"
+                        ExecutionComplete -> error "Internal invariant violation: a halted computation contains a completed state"
         )
 
 
@@ -106,7 +106,7 @@ evalExpr sym flags expr state =
         ExpFunctionCall _ann _span functionExpr argumentsInfo ->
             evalFunctionCall sym flags functionExpr (alistList argumentsInfo) state
         _ ->
-            error "Unsupported expression in Fortran subset"
+            error "Unsupported expression in the current Fortran subset"
 
 
 
@@ -133,7 +133,7 @@ evalValue sym flags span val state =
             if b then pure [ValueAndStateProduced (SomeBool (truePred sym)) state]
                 else pure [ValueAndStateProduced (SomeBool (falsePred sym)) state]
         _ ->
-            error "Unsupported expression in Fortran subset"
+            error "Unsupported expression in the current Fortran subset"
 
 
 realAstLitToRational :: ASTReal.RealLit -> Rational
@@ -232,7 +232,7 @@ evalBinary sym _flags span op v1 v2 state =
                 (SomeInt _,  SomeReal _) -> numericEq
                 (SomeReal _, SomeInt _)  -> numericEq
                 (SomeReal _, SomeReal _) -> numericEq
-                _ -> error "type error"
+                _ -> error "Equality operands must both be logical or numeric"
             where
                 numericEq = do
                     (v1p, v2p) <- promoteNumeric sym v1 v2
@@ -250,7 +250,7 @@ evalBinary sym _flags span op v1 v2 state =
                 (SomeInt _,  SomeReal _) -> numericNe
                 (SomeReal _, SomeInt _)  -> numericNe
                 (SomeReal _, SomeReal _) -> numericNe
-                _ -> error "type error"
+                _ -> error "Inequality operands must both be logical or numeric"
             where
                 numericNe = do
                     (v1p, v2p) <- promoteNumeric sym v1 v2
@@ -346,7 +346,7 @@ evalUnary sym flags op v state =
                     pure [ValueAndStateProduced (SomeBool q) state]
                 _ ->  error ".not. requires logical operand"
 
-        _ -> error "Unsupported/invalid unary operator"
+        _ -> error "Unsupported unary operator in the current Fortran subset"
 
 
 -- enforce numeric type lifting on binary operations between ints and reals
@@ -367,7 +367,7 @@ promoteNumeric sym v1 v2 =
         (SomeReal x, SomeInt y) -> do
             y' <- integerToReal sym y
             pure (SomeReal x, SomeReal y')
-        _ -> error "Non-numeric terms in arithmetic operation"
+        _ -> error "Arithmetic operations require numeric operands"
         
       
 coerceOnAssignment :: IsSymExprBuilder sym
@@ -390,7 +390,7 @@ coerceOnAssignment sym targetType rhs =
             pure (SomeInt xI)
         (VarBool, SomeBool _) ->
             pure rhs
-        _ -> error "Bad assignment"
+        _ -> error "Assignment source and target types are incompatible"
 
 coerceArrayOnAssignment :: ExprBuilder t st fs
     -> ExecutorFlags

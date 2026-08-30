@@ -427,7 +427,7 @@ printStatesWithObligationResults sym reportOptions label states stateResults = d
         printPairedStates (index + 1) remainingStates remainingResults
 
     printPairedStates _ _ _ =
-        error "State and obligation-result counts do not match."
+        error "Internal invariant violation: state and obligation-result counts do not match"
 
 
 printObligationResults ::

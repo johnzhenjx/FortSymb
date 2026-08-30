@@ -36,7 +36,7 @@ execProgramFile ::
 execProgramFile sym flags pf = 
     case programFileProgramUnits pf of
         [pu] -> execProgramUnit sym flags pu
-        _  -> error "Only single program unit is supported for now"
+        _  -> error "Exactly one main program unit is currently supported"
         -- fmap concat ( mapM (execProgramUnit sym) (programFileProgramUnits pf) )
 
 
@@ -51,7 +51,7 @@ execProgramUnit sym flags pu =
         PUMain _ann _span _name blocks maybeInternalProcedures -> do
             let procedureEnv = buildProcedureEnv (maybe [] id maybeInternalProcedures)
             execBlocks sym flags blocks (emptyState procedureEnv)
-        _ -> error "Bad"
+        _ -> error "Only a main program unit is currently supported"
 
 
 execBlocks ::
@@ -153,7 +153,7 @@ execBlock sym flags block state =
 
         BlComment _ann _span _comment -> pure [state]
 
-        _ -> error "Unsupproted Bl"
+        _ -> error "Unsupported block type in the current Fortran subset"
         -- ...
 
 
@@ -305,7 +305,7 @@ execDoBlock sym flags span maybeName maybeSpec body state =
 
         assignIntegerValue name value state =
             case Map.lookup name (env state) of
-                Nothing -> error $ "Undeclared variable in doloop (wtf): " ++ name
+                Nothing -> error $ "DO loop variable is not declared: " ++ name
 
                 Just binding ->
                     do
@@ -319,7 +319,7 @@ execDoBlock sym flags span maybeName maybeSpec body state =
                                         (env state)
                                     }
 
-                            _ -> error $ "Expected integer variable in doloop (wtf): " ++ name
+                            _ -> error $ "DO loop variable must be an integer: " ++ name
         
         -- (increment > 0 && currentValue <= limitValue)
         -- ||
@@ -456,7 +456,7 @@ execStatement sym flags statement state =
 
         StImplicit{} -> pure [state]
 
-        _ -> error "Unsupported statement type"
+        _ -> error "Unsupported statement type in the current Fortran subset"
 
 
 execPrintExpressions ::
@@ -1175,7 +1175,7 @@ execCaseClauses sym flags selectorValue cases maybeDefaultBlocks state =
 
                             pure (matchingResults ++ remainingResults)
 
-                        _ -> error "Internal error: CASE selector list did not produce a logical predicate"
+                        _ -> error "Internal invariant violation: CASE selector list did not produce a logical predicate"
                 )
                 (\haltedState -> pure [haltedState])
 
