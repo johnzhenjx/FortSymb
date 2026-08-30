@@ -10,6 +10,12 @@ extra-source-files:
 - README.md
 - CHANGELOG.md
 
+data-files:
+- z3/LICENSE.txt
+- z3/bin/z3.exe
+- z3/bin/msvcp140.dll
+- z3/bin/vcruntime140.dll
+
 # Metadata used when publishing your package
 # synopsis:            Short description of your package
 # category:            Web
@@ -48,7 +54,7 @@ library:
   source-dirs: src
 
 executables:
-  FortSymb-exe:
+  fortsymb:
     main:                Main.hs
     source-dirs:         app
     ghc-options:

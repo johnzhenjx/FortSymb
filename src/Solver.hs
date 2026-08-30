@@ -1,43 +1,20 @@
 module Solver where
 
-import qualified Data.ByteString.Char8 as B
-
-import Data.Map (Map)  
 import qualified Data.Map as Map
 
-import Language.Fortran.Parser
-import Language.Fortran.Version
-import Language.Fortran.AST
-import qualified Language.Fortran.AST.Literal.Real as ASTReal
-
 import What4.Interface
-import What4.BaseTypes          
-
- 
-
-
-
-
-
-
-
-
-  
-
-   
-   
 import What4.Expr.Builder
-import What4.Symbol
 import What4.Expr
          ( ExprRangeBindings, GroundEvalFn, groundEval )
 
 import What4.Solver
-         (defaultLogData, z3Options, withZ3, SatResult(..))
+         (defaultLogData, withZ3, SatResult(..))
 import What4.Protocol.SMTLib2
          (assume, sessionWriter, runCheckSat)
 
 import Prelude hiding (EQ, LT, GT)
 
+import Paths_FortSymb (getDataFileName)
 import Types
 
 import Control.Monad (filterM)
@@ -59,9 +36,8 @@ predicateOfCondList sym conditions =
             andPred sym predicate remainingPredicate
 
 
-z3exe :: FilePath
-z3exe =
-    "z3-4.8.12-x86-win/bin/z3.exe"
+z3Executable :: IO FilePath
+z3Executable = getDataFileName "z3/bin/z3.exe"
 
 --runs a solver query and handles the result while the Z3 session is open
 --
@@ -71,8 +47,9 @@ withSolverResult ::
     BoolExpr t ->
     (SatResult (GroundEvalFn t, Maybe (ExprRangeBindings t)) () -> IO a) -> --takes function for evaluating model
     IO a
-withSolverResult sym predicate handleResult =
-    withZ3 sym z3exe defaultLogData $ \session -> do
+withSolverResult sym predicate handleResult = do
+    z3Path <- z3Executable
+    withZ3 sym z3Path defaultLogData $ \session -> do
         assume (sessionWriter session) predicate
         runCheckSat session handleResult
 
@@ -89,7 +66,7 @@ checkStateFeasibility sym state = do
         case solverResult of
             Sat _ -> pure True
             Unsat _ -> pure False
-            Unknown -> error "Solver failed to determine path feasibility."
+            Unknown -> error "Solver returned unknown while checking path feasibility"
 
 
 --filters out states whose path conditions are unsatisfiable
@@ -153,7 +130,7 @@ evaluateOneObligation sym state obligation = do
             Sat (ge, _) -> do
                 counterexample <- extractCounterexample ge state
                 pure (ObligationInvalid counterexample)
-            Unknown -> error "Solver failed to determine obligation validity"
+            Unknown -> error "Solver returned unknown while checking an obligation"
 
 
 extractCounterexample ::

@@ -18,6 +18,11 @@ build-type:     Simple
 extra-source-files:
   README.md
   CHANGELOG.md
+data-files:
+  z3/LICENSE.txt
+  z3/bin/z3.exe
+  z3/bin/msvcp140.dll
+  z3/bin/vcruntime140.dll
 
 source-repository head
   type: git
@@ -56,7 +61,7 @@ library
     what4
   default-language: Haskell2010
 
-executable FortSymb-exe
+executable fortsymb
   main-is: Main.hs
   other-modules:
     Paths_FortSymb
