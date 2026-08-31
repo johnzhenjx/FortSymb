@@ -1,7 +1,6 @@
 # FortSymb
 
-FortSymb is an experimental symbolic executor for a subset of Fortran 90. It explores program paths with symbolic inputs and uses the What4 interface to Z3
-to check runtime safety conditions and user assertions. When an obligation can fail, FortSymb reports a counterexample.
+FortSymb is an experimental symbolic executor for a subset of Fortran 90. It explores program paths with symbolic inputs and uses the What4 interface to Z3 to check runtime safety conditions and user assertions. When an obligation can fail, FortSymb reports a counterexample.
 
 FortSymb is under development. It does not yet implement the complete Fortran language and should not be treated as a production verifier.
 
@@ -22,8 +21,7 @@ FortSymb currently supports:
 - Windows (for now)
 - [Haskell Stack](https://docs.haskellstack.org/)
 
-The package includes a reduced 32-bit Z3 4.8.12 runtime, so Z3 does not need to
-be installed separately.
+The package includes a reduced 32-bit Z3 4.8.12 runtime, so Z3 does not need to be installed separately.
 
 ## Building
 
