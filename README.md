@@ -80,7 +80,7 @@ program bounds_example
 end program bounds_example
 ```
 
-The assertion marker must be written as `!@assert ` followed by a logical Fortran expression. Leading indentation is allowed.
+The assertion marker must be written as `!@assert ` followed by a logical Fortran expression.
 
 
 ## Proof obligations
